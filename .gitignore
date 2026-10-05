@@ -1,0 +1,56 @@
+# Build directories
+build/
+build-*/
+out/
+cmake-build-*/
+
+# CMake artifacts (in-source builds)
+CMakeCache.txt
+CMakeFiles/
+CMakeScripts/
+CMakeUserPresets.json
+cmake_install.cmake
+install_manifest.txt
+CTestTestfile.cmake
+Testing/
+compile_commands.json
+_deps/
+
+# Objects, libraries and binaries
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.so.*
+*.dylib
+*.dll
+*.exe
+*.out
+*.pdb
+*.ilk
+*.exp
+*.dSYM/
+/cwtty
+/test_cwtty
+
+# Editors and IDEs
+.vscode/
+.idea/
+.vs/
+*.swp
+*.swo
+*~
+\#*\#
+.#*
+.cache/
+.clangd/
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Local recordings and scratch files
+*.wav
+*.log
