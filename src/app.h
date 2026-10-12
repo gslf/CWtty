@@ -35,7 +35,6 @@ typedef struct {
     int         ntyped;
     char        sent[96];     /* send: what the decoder read */
     int         ok;           /* result of the last item */
-    double      result_at;    /* when the result was shown */
     double      item_at;      /* when the item started */
     int         total, correct, streak, best;
     int         err[128], seen[128]; /* per character statistics */
@@ -176,7 +175,6 @@ void trx_operator_pressed(app_t *a);
 
 void train_enter(app_t *a);
 void train_leave(app_t *a);
-void train_update(app_t *a);
 void train_render(app_t *a, rect_t r);
 int  train_key(app_t *a, const key_event *ev);
 void train_on_sent(app_t *a, const dec_token *tok);

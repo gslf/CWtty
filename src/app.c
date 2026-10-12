@@ -580,8 +580,6 @@ void app_update(app_t *a)
 
     if (a->mode == MODE_TRX)
         trx_update(a);
-    else if (a->mode == MODE_TRAIN)
-        train_update(a);
 }
 
 /* ------------------------------------------------------------------------ */

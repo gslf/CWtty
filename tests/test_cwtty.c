@@ -390,7 +390,6 @@ static void training_collect(app_t *a, double now)
     dec_update(&a->txdec, now);
     while (dec_pop(&a->txdec, &tok))
         train_on_sent(a, &tok);
-    train_update(a);
 }
 
 static void training_character(app_t *a, const char *letter, double *now, double gap)
@@ -464,6 +463,51 @@ static void test_send_training(void)
     a.tr.sel = 3; /* Direction, material, hint, spacing, start. */
     train_key(&a, &right);
     CHECK(a.cfg.train_strict == 0, "spacing choice did not toggle");
+}
+
+static void test_copy_training(void)
+{
+    static app_t a;
+    key_event enter = {KEY_ENTER, 0, EV_PRESS, 0};
+    key_event space = {KEY_SPACE, 0, EV_PRESS, ' '};
+    key_event letter = {'x', 0, EV_PRESS, 'x'};
+    key_event replay = {'r', MOD_CTRL, EV_PRESS, 0};
+    int ok;
+    printf("copy training: the result stays until Enter\n");
+    for (ok = 0; ok <= 1; ok++) {
+        training_init(&a, "THE", 0);
+        a.cfg.train_dir = TRAIN_COPY;
+        a.tr.state = TS_LISTEN;
+        str_copy(a.tr.typed, sizeof a.tr.typed, ok ? "THE" : "TEH");
+        a.tr.ntyped = 3;
+        train_key(&a, &enter);
+        CHECK(a.tr.state == TS_RESULT && a.tr.ok == ok, "Enter did not check the copy");
+        a.now = 60000;
+        train_key(&a, &replay);
+        train_key(&a, &space);
+        train_key(&a, &letter);
+        CHECK(a.tr.state == TS_RESULT && strcmp(a.tr.target, "THE") == 0,
+              "%s result went away before Enter", ok ? "correct" : "wrong");
+        scr_init(1);
+        scr_resize(80, 24);
+        app_render(&a);
+        {
+            char row[81];
+            int x, y, hint = 0;
+            for (y = 0; y < 24 && !hint; y++) {
+                for (x = 0; x < 80; x++) {
+                    uint32_t cp = scr_cell(x, y)->ch;
+                    row[x] = cp < 128 ? (char)cp : ' ';
+                }
+                row[80] = 0;
+                hint = strstr(row, "Enter next") && strstr(row, "C-r") != NULL;
+            }
+            CHECK(hint, "the result does not say how to continue");
+        }
+        scr_shutdown();
+        train_key(&a, &enter);
+        CHECK(a.tr.state == TS_LISTEN && a.tr.typed[0] == 0, "Enter did not start the next item");
+    }
 }
 
 static void test_training_table_footer(void)
@@ -722,6 +766,7 @@ int main(void)
     test_transcript();
     test_settings();
     test_send_training();
+    test_copy_training();
     test_training_table_footer();
     test_morse_table();
     test_keyer();

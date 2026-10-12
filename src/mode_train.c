@@ -14,9 +14,6 @@
 #include "util.h"
 #include "wordlists.h"
 
-#define RESULT_OK_MS 900.0
-#define RESULT_BAD_MS 3500.0
-
 static const char *const CHARSET_NAMES[] = {"Koch method", "Letters", "Numbers", "Punctuation",
                                             "Letters & numbers", "Everything"};
 static const char *const CONTENT_NAMES[] = {"Characters", "English words", "Q-codes & abbreviations"};
@@ -182,7 +179,6 @@ static void record(app_t *a, const char *expect, const char *got, int ok)
     if (t->nhist < (int)sizeof t->hist)
         t->nhist++;
     t->ok = ok;
-    t->result_at = a->now;
 
     /* Koch method: suggest the next lesson at 90% over 20+ items. */
     if (a->cfg.train_content == TRAIN_CHARS && a->cfg.train_charset == CHARSET_KOCH && t->total >= 20 &&
@@ -283,19 +279,6 @@ void train_on_sent(app_t *a, const dec_token *tok)
         strcat(t->sent, tok->text);
     if (normalized_len(t->sent) >= normalized_len(t->target))
         check_send(a);
-}
-
-void train_update(app_t *a)
-{
-    training_t *t = &a->tr;
-    switch (t->state) {
-    case TS_RESULT:
-        if (a->now - t->result_at > (t->ok ? RESULT_OK_MS : RESULT_BAD_MS) && !audio_playback_busy())
-            new_item(a);
-        break;
-    default:
-        break;
-    }
 }
 
 /* ------------------------------------------------------------------------ */
@@ -598,7 +581,9 @@ static void render_copy(app_t *a, rect_t in)
         centered(in, y++, buf, TH_FG_MUTED, 0);
     }
     if (t->meaning)
-        centered(in, y, t->meaning, TH_FG, A_ITALIC);
+        centered(in, y++, t->meaning, TH_FG, A_ITALIC);
+    if (y + 1 < in.y + in.h)
+        centered(in, y + 1, "Enter next  ·  C-r to hear it again", TH_FG_FAINT, 0);
 }
 
 static void render_send(app_t *a, rect_t in)
@@ -715,8 +700,9 @@ int train_key(app_t *a, const key_event *ev)
         }
         if (ev->mods & (MOD_CTRL | MOD_ALT))
             return 0;
+        /* The result stays up, for another listen with C-r, until Enter. */
         if (t->state == TS_RESULT) {
-            if (ev->key == KEY_ENTER || ev->key == KEY_SPACE)
+            if (ev->key == KEY_ENTER)
                 new_item(a);
             return 1;
         }
