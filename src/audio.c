@@ -153,9 +153,10 @@ static void playback_callback(ma_device *dev, void *output, const void *input, m
         straight = at_get(&A.straight_level);
         dit_edge = dc != A.seen_dit;
         dah_edge = ac != A.seen_dah;
-        /* Taps shorter than a period are still heard: the straight key, and
-         * the manual dah lever of the bug. */
-        if (sc != A.seen_straight || (mode == KEYER_BUG && dah_edge))
+        /* Taps shorter than a period are still heard: the straight key, the
+         * manual dah lever of the bug and the paddles used as straight keys. */
+        if (sc != A.seen_straight || (mode == KEYER_BUG && dah_edge) ||
+            (mode == KEYER_STRAIGHT && (dit_edge || dah_edge)))
             A.straight_hold = (uint32_t)(rate * STRAIGHT_MIN_MS / 1000.0);
     }
     A.seen_dit = dc;
@@ -181,7 +182,8 @@ static void playback_callback(ma_device *dev, void *output, const void *input, m
         float g, s;
 
         k = keyer_tick(&A.keyer, dit, dah, i == 0 && dit_edge, i == 0 && dah_edge);
-        manual = straight || A.straight_hold > 0 || (mode == KEYER_BUG && dah);
+        manual = straight || A.straight_hold > 0 || (mode == KEYER_BUG && dah) ||
+                 (mode == KEYER_STRAIGHT && (dit || dah));
         if (A.straight_hold > 0)
             A.straight_hold--;
         op = k || manual;

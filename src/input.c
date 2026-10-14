@@ -1,6 +1,7 @@
 /*
- * input.c - Keyboard decoding: kitty protocol, legacy escape sequences and
- * Windows console records, all mapped to key_event.
+ * input.c - Keyboard and mouse button decoding: kitty protocol, legacy
+ * escape sequences, mouse reports and Windows console records, all mapped
+ * to key_event.
  */
 #include "input.h"
 
@@ -38,6 +39,15 @@ const kbd_info *input_info(void)
 void input_test_set_info(const kbd_info *ki)
 {
     info = *ki;
+}
+
+void input_set_mouse(int on)
+{
+    on = !!on;
+    if (on == info.mouse)
+        return;
+    info.mouse = on;
+    term_set_mouse(on);
 }
 
 /* ------------------------------------------------------------------------ */
@@ -152,8 +162,13 @@ static void push_event(int key, int mods, int type, uint32_t text)
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 
+#ifndef MOUSE_HWHEELED
+#define MOUSE_HWHEELED 0x0008
+#endif
+
 static unsigned char vk_down[256];
 static int vk_key[256];
+static DWORD mouse_buttons; /* left and right button state */
 
 static int map_vk(WORD vk, WCHAR ch)
 {
@@ -237,6 +252,28 @@ static void translate_key(const KEY_EVENT_RECORD *k)
     push_event(key, mods, type, text);
 }
 
+static void translate_mouse(const MOUSE_EVENT_RECORD *m)
+{
+    static const struct {
+        DWORD bit;
+        int   key;
+    } buttons[] = {{FROM_LEFT_1ST_BUTTON_PRESSED, KEY_MOUSE_LEFT}, {RIGHTMOST_BUTTON_PRESSED, KEY_MOUSE_RIGHT}};
+    DWORD now, changed;
+    int i;
+
+    /* Presses arrive with no flag, or as DOUBLE_CLICK for a quick second
+     * tap: compare the button state whatever the flags, except the wheel
+     * (its records carry the wheel delta). */
+    if (!info.mouse || (m->dwEventFlags & (MOUSE_WHEELED | MOUSE_HWHEELED)))
+        return;
+    now = m->dwButtonState & (FROM_LEFT_1ST_BUTTON_PRESSED | RIGHTMOST_BUTTON_PRESSED);
+    changed = now ^ mouse_buttons;
+    mouse_buttons = now;
+    for (i = 0; i < 2; i++)
+        if (changed & buttons[i].bit)
+            push_event(buttons[i].key, 0, (now & buttons[i].bit) ? EV_PRESS : EV_RELEASE, 0);
+}
+
 void input_init(int force_legacy)
 {
     (void)force_legacy;
@@ -272,11 +309,16 @@ int input_poll(key_event *out, int cap, int timeout_ms)
                 case KEY_EVENT:
                     translate_key(&recs[i].Event.KeyEvent);
                     break;
+                case MOUSE_EVENT:
+                    translate_mouse(&recs[i].Event.MouseEvent);
+                    break;
                 case FOCUS_EVENT:
                     push_event(recs[i].Event.FocusEvent.bSetFocus ? KEY_FOCUS_IN : KEY_FOCUS_OUT, 0,
                                EV_PRESS, 0);
-                    if (!recs[i].Event.FocusEvent.bSetFocus)
+                    if (!recs[i].Event.FocusEvent.bSetFocus) {
                         memset(vk_down, 0, sizeof vk_down);
+                        mouse_buttons = 0;
+                    }
                     break;
                 case WINDOW_BUFFER_SIZE_EVENT:
                     term_flag_resize();
@@ -304,6 +346,10 @@ static double last_rx;
 
 /* Replies to our capability queries. */
 static int seen_kitty, seen_da;
+
+/* Mouse buttons held (bit 0 left, bit 1 right): X10 releases do not say
+ * which button went up. */
+static int mouse_held;
 
 #define MAX_FIELDS 4
 #define MAX_SUBS 4
@@ -362,6 +408,33 @@ static int map_kitty_code(int code)
     return code;
 }
 
+/*
+ * A mouse report: the button code of an SGR (ESC [ < b ; x ; y M/m) or X10
+ * (ESC [ M b x y) report. Only the left and right buttons are used.
+ */
+static void handle_mouse(int b, int release)
+{
+    int i;
+    if (b & (32 | 64 | 128)) /* motion, wheel, extra buttons */
+        return;
+    b &= 3;                  /* drop the modifiers */
+    if (b == 3) {            /* X10 release: all buttons */
+        for (i = 0; i < 2; i++)
+            if (mouse_held & (1 << i))
+                push_event(i ? KEY_MOUSE_RIGHT : KEY_MOUSE_LEFT, 0, EV_RELEASE, 0);
+        mouse_held = 0;
+        return;
+    }
+    if (b == 1) /* middle */
+        return;
+    i = b == 2;
+    if (release)
+        mouse_held &= ~(1 << i);
+    else
+        mouse_held |= 1 << i;
+    push_event(i ? KEY_MOUSE_RIGHT : KEY_MOUSE_LEFT, 0, release ? EV_RELEASE : EV_PRESS, 0);
+}
+
 static void handle_csi(const csi_t *c)
 {
     int mods = field(c, 1, 0, 1) - 1;
@@ -381,6 +454,11 @@ static void handle_csi(const csi_t *c)
         } else if (c->final == 'c') {
             seen_da = 1;
         }
+        return;
+    }
+    if (c->priv == '<') {
+        if (info.mouse && (c->final == 'M' || c->final == 'm'))
+            handle_mouse(field(c, 0, 0, 0), c->final == 'm');
         return;
     }
     if (c->priv)
@@ -584,6 +662,18 @@ static void parse_buffer(int flush)
                 i++;
                 continue;
             }
+            if (ibuf[i + 1] == '[' && info.mouse && i + 2 < ilen && ibuf[i + 2] == 'M') {
+                /* X10 mouse report (no SGR support): three raw bytes. */
+                if (i + 6 > ilen) {
+                    if (!flush)
+                        break;
+                    i = ilen;
+                    continue;
+                }
+                handle_mouse(ibuf[i + 3] - 32, 0);
+                i += 6;
+                continue;
+            }
             if (ibuf[i + 1] == '[') {
                 used = parse_csi(ibuf + i, ilen - i);
                 if (used == 0) {
@@ -702,6 +792,7 @@ int input_test_parse(const unsigned char *bytes, int n, key_event *out, int cap)
 {
     q_len = 0;
     ilen = 0;
+    mouse_held = 0;
     memset(emu, 0, sizeof emu);
     if (n < 0)
         return 0;

@@ -22,6 +22,7 @@ void settings_defaults(settings_t *s)
     s->tone_hz = 600;
     s->wpm = 20;
     s->farnsworth = 0;
+    s->key_input = INPUT_KEYBOARD;
     s->keyer_mode = KEYER_IAMBIC_B;
     s->swap_paddles = 0;
     s->volume = 60;
@@ -64,6 +65,7 @@ void settings_clamp(settings_t *s)
     if (s->farnsworth >= s->wpm)
         s->farnsworth = 0;
     s->farnsworth = clampi(s->farnsworth, 0, 59);
+    s->key_input = clampi(s->key_input, 0, INPUT_COUNT - 1);
     s->keyer_mode = clampi(s->keyer_mode, 0, KEYER_MODE_COUNT - 1);
     s->swap_paddles = !!s->swap_paddles;
     s->volume = clampi(s->volume, 0, 100);
@@ -102,7 +104,7 @@ static const field_t FIELDS[] = {
     F_INT(rx_lock),       F_INT(breakin_ms),    F_INT(trx_sidetone),  F_INT(latency_ms),
     F_STR(out_dev),       F_STR(in_dev),        F_INT(train_dir),     F_INT(train_content),
     F_INT(train_charset), F_INT(train_koch),    F_INT(train_group),   F_INT(train_hint),
-    F_INT(train_strict),
+    F_INT(train_strict),  F_INT(key_input),
 };
 
 static char *trim(char *s)

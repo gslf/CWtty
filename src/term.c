@@ -40,6 +40,9 @@ void term_write_str(const char *s)
 #define DISABLE_NEWLINE_AUTO_RETURN 0x0008
 #endif
 
+/* Raw key records (with key-up events), window and focus events. */
+#define IN_MODE (ENABLE_WINDOW_INPUT | ENABLE_EXTENDED_FLAGS)
+
 static HANDLE h_in = INVALID_HANDLE_VALUE;
 static HANDLE h_out = INVALID_HANDLE_VALUE;
 static DWORD old_in_mode, old_out_mode;
@@ -104,8 +107,8 @@ int term_init(void)
     old_out_cp = GetConsoleOutputCP();
     old_in_cp = GetConsoleCP();
 
-    /* Raw key records (with key-up events), window and focus events. */
-    SetConsoleMode(h_in, ENABLE_WINDOW_INPUT | ENABLE_EXTENDED_FLAGS);
+    /* Without ENABLE_QUICK_EDIT_MODE, clicks reach us as mouse records. */
+    SetConsoleMode(h_in, IN_MODE);
     if (!SetConsoleMode(h_out, ENABLE_PROCESSED_OUTPUT | ENABLE_VIRTUAL_TERMINAL_PROCESSING |
                                    DISABLE_NEWLINE_AUTO_RETURN)) {
         SetConsoleMode(h_in, old_in_mode);
@@ -124,6 +127,13 @@ int term_init(void)
 void term_shutdown(void)
 {
     restore();
+}
+
+/* restore() puts the original console mode back: no need to undo this. */
+void term_set_mouse(int on)
+{
+    if (g_active)
+        SetConsoleMode(h_in, IN_MODE | (on ? ENABLE_MOUSE_INPUT : 0));
 }
 
 void term_get_size(int *w, int *h)
@@ -170,12 +180,17 @@ void *term_input_handle(void)
 #include <termios.h>
 #include <unistd.h>
 
+/* Button press / release tracking, SGR encoding. */
+static const char SEQ_MOUSE_ON[] = "\x1b[?1000h\x1b[?1006h";
+static const char SEQ_MOUSE_OFF[] = "\x1b[?1006l\x1b[?1000l";
+
 static int tty_fd = -1;
 static int own_fd;
 static struct termios orig_tio;
 static volatile sig_atomic_t g_active;
 static volatile sig_atomic_t g_resized;
 static volatile sig_atomic_t g_quit;
+static volatile sig_atomic_t g_mouse;
 
 void term_write(const char *buf, size_t len)
 {
@@ -197,6 +212,8 @@ static void restore(void)
     if (!g_active)
         return;
     g_active = 0;
+    if (g_mouse)
+        term_write(SEQ_MOUSE_OFF, sizeof SEQ_MOUSE_OFF - 1);
     if (g_kitty_pushed)
         term_write(SEQ_KITTY_POP, sizeof SEQ_KITTY_POP - 1);
     term_write(SEQ_LEAVE, sizeof SEQ_LEAVE - 1);
@@ -266,6 +283,13 @@ int term_init(void)
     atexit(restore);
     term_write(SEQ_ENTER, sizeof SEQ_ENTER - 1);
     return 0;
+}
+
+void term_set_mouse(int on)
+{
+    g_mouse = on;
+    if (g_active)
+        term_write_str(on ? SEQ_MOUSE_ON : SEQ_MOUSE_OFF);
 }
 
 void term_shutdown(void)

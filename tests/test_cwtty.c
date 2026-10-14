@@ -224,7 +224,7 @@ static void test_input_parser(void)
         {0, "\x1b", KEY_ESC, 0, EV_PRESS, 0},
         {0, "\xc3\xa8", 0xE8, 0, EV_PRESS, 0xE8},
     };
-    kbd_info kitty = {KBD_KITTY, 31, 1, 1}, legacy = {KBD_LEGACY, 0, 0, 0};
+    kbd_info kitty = {KBD_KITTY, 31, 1, 1, 0}, legacy = {KBD_LEGACY, 0, 0, 0, 0};
     key_event ev[8];
     int i, n;
     printf("input parser\n");
@@ -276,6 +276,54 @@ static void test_input_parser(void)
         n = input_test_parse(bytes, sizeof bytes, ev, 8);
         CHECK(n == 2 && ev[0].text == 0xFFFD && ev[1].key == 'x', "invalid UTF-8 swallowed a key");
     }
+#endif
+}
+
+static void test_mouse_parser(void)
+{
+#ifndef _WIN32
+    kbd_info mouse = {KBD_KITTY, 31, 1, 1, 1}, nomouse = {KBD_KITTY, 31, 1, 1, 0};
+    key_event ev[8];
+    int n;
+    printf("input parser: mouse buttons (USB pad)\n");
+    input_test_set_info(&mouse);
+    /* SGR: left press, right press, left release, right release (a squeeze). */
+    {
+        const char *sgr = "\x1b[<0;10;5M\x1b[<2;10;5M\x1b[<0;10;5m\x1b[<2;10;5m";
+        n = input_test_parse((const unsigned char *)sgr, (int)strlen(sgr), ev, 8);
+    }
+    CHECK(n == 4 && ev[0].key == KEY_MOUSE_LEFT && ev[0].type == EV_PRESS && ev[1].key == KEY_MOUSE_RIGHT &&
+              ev[1].type == EV_PRESS && ev[2].key == KEY_MOUSE_LEFT && ev[2].type == EV_RELEASE &&
+              ev[3].key == KEY_MOUSE_RIGHT && ev[3].type == EV_RELEASE && ev[0].mods == 0 && ev[0].text == 0,
+          "SGR squeeze: %d events", n);
+    /* Modifiers are dropped; wheel, motion and the middle button ignored. */
+    {
+        const char *other = "\x1b[<16;1;1M\x1b[<64;1;1M\x1b[<65;1;1M\x1b[<1;1;1M\x1b[<35;3;3M";
+        n = input_test_parse((const unsigned char *)other, (int)strlen(other), ev, 8);
+    }
+    CHECK(n == 1 && ev[0].key == KEY_MOUSE_LEFT && ev[0].type == EV_PRESS, "SGR extras: %d events", n);
+    /* X10 (no SGR support): the release does not say which button. */
+    {
+        const char *x10 = "\x1b[M !!\x1b[M\"!!\x1b[M#!!";
+        n = input_test_parse((const unsigned char *)x10, (int)strlen(x10), ev, 8);
+    }
+    CHECK(n == 4 && ev[0].key == KEY_MOUSE_LEFT && ev[0].type == EV_PRESS && ev[1].key == KEY_MOUSE_RIGHT &&
+              ev[1].type == EV_PRESS && ev[2].type == EV_RELEASE && ev[3].type == EV_RELEASE &&
+              ev[2].key != ev[3].key,
+          "X10 squeeze: %d events", n);
+    /* A report split across reads waits for the rest. */
+    {
+        const char *part = "\x1b[M ";
+        n = input_test_parse((const unsigned char *)part, (int)strlen(part), ev, 8);
+        CHECK(n == 0, "partial X10 report produced %d event(s)", n);
+    }
+    /* Mouse reporting off: reports never become keys. */
+    input_test_set_info(&nomouse);
+    {
+        const char *sgr = "\x1b[<0;10;5M\x1b[<0;10;5m";
+        n = input_test_parse((const unsigned char *)sgr, (int)strlen(sgr), ev, 8);
+    }
+    CHECK(n == 0, "mouse report with reporting off: %d events", n);
 #endif
 }
 
@@ -361,11 +409,58 @@ static void test_settings(void)
     CHECK(s.wpm == 20 && s.volume == 60 && s.rx_freq == 600 && s.tone_hz == 750 && s.rx_bw == 50,
           "invalid settings changed valid defaults");
     s.train_strict = 1;
+    s.key_input = INPUT_PAD;
+    s.keyer_mode = KEYER_STRAIGHT;
     CHECK(settings_save(&s, path) == 0, "could not save strict training setting");
     settings_defaults(&s);
     CHECK(s.train_strict == 0, "relaxed training should be the default");
+    CHECK(s.key_input == INPUT_KEYBOARD, "the keyboard should be the default input");
     CHECK(settings_load(&s, path) == 0 && s.train_strict == 1, "strict training setting not persisted");
+    CHECK(s.key_input == INPUT_PAD && s.keyer_mode == KEYER_STRAIGHT, "USB pad settings not persisted");
+    s.key_input = 7;
+    settings_clamp(&s);
+    CHECK(s.key_input == INPUT_COUNT - 1, "key input out of range: %d", s.key_input);
     remove(path);
+}
+
+static void test_pad_keying(void)
+{
+    static app_t a;
+    key_event space = {KEY_SPACE, 0, EV_PRESS, ' '}, space_up = {KEY_SPACE, 0, EV_RELEASE, 0};
+    key_event left = {KEY_MOUSE_LEFT, 0, EV_PRESS, 0}, left_up = {KEY_MOUSE_LEFT, 0, EV_RELEASE, 0};
+    key_event right = {KEY_MOUSE_RIGHT, 0, EV_PRESS, 0}, right_up = {KEY_MOUSE_RIGHT, 0, EV_RELEASE, 0};
+    printf("keying: keyboard or USB pad\n");
+    memset(&a, 0, sizeof a);
+    settings_defaults(&a.cfg);
+    a.mode = MODE_TX;
+    a.kbd = input_info();
+
+    app_handle_key(&a, &left);
+    CHECK(!a.key_left, "the pad keyed while the keyboard is selected");
+    app_handle_key(&a, &space);
+    CHECK(a.key_space, "Space did not key with the keyboard selected");
+    app_handle_key(&a, &space_up);
+
+    a.cfg.key_input = INPUT_PAD;
+    app_handle_key(&a, &space);
+    CHECK(!a.key_space, "Space keyed while the USB pad is selected");
+    app_handle_key(&a, &left);
+    app_handle_key(&a, &right);
+    CHECK(a.key_left && a.key_right, "the pad levers did not key");
+    app_handle_key(&a, &left_up);
+    app_handle_key(&a, &right_up);
+    CHECK(!a.key_left && !a.key_right, "the pad levers stayed down");
+    a.cfg.swap_paddles = 1;
+    app_handle_key(&a, &left);
+    CHECK(a.key_left, "the swapped left lever did not key");
+    app_handle_key(&a, &left_up);
+    /* Releases always count, whatever device is selected. */
+    a.cfg.key_input = INPUT_KEYBOARD;
+    a.cfg.swap_paddles = 0;
+    a.key_right = 1;
+    app_handle_key(&a, &right_up);
+    CHECK(!a.key_right, "a pad release was lost after switching to the keyboard");
+    audio_release_keys();
 }
 
 static void training_init(app_t *a, const char *target, int strict)
@@ -692,6 +787,13 @@ static void test_keyer(void)
         prev = on;
     }
     CHECK(nm == 3, "iambic A should stop after the current element (got %d)", nm);
+
+    /* Straight key: the paddles are manual (keyed outside the keyer). */
+    keyer_init(&k, KEYER_STRAIGHT, 100);
+    nm = 0;
+    for (i = 0; i < 1000; i++)
+        nm += keyer_tick(&k, i < 500, i >= 200 && i < 700, i == 0, i == 200);
+    CHECK(nm == 0 && !keyer_busy(&k), "the straight key mode ran the keyer for %d samples", nm);
 }
 
 static void test_receiver(void)
@@ -762,9 +864,11 @@ static void test_receiver_noise_only(void)
 int main(void)
 {
     test_input_parser();
+    test_mouse_parser();
     test_text_helpers();
     test_transcript();
     test_settings();
+    test_pad_keying();
     test_send_training();
     test_copy_training();
     test_training_table_footer();

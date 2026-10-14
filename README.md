@@ -5,12 +5,12 @@
 
 ## Features
 
-- **Transmit** – Space is a straight key, the left and right arrows are the dit and dah paddles of an electronic keyer (Iambic A, Iambic B, Ultimatic, Bug are supported). The sidetone is click-free (raised cosine envelope) and the keyer runs inside the audio callback, so element and space lengths are sample-accurate.
+- **Transmit** – Space is a straight key, the left and right arrows are the dit and dah paddles of an electronic keyer (Iambic A, Iambic B, Ultimatic, Bug and Straight key are supported). A USB paddle that acts as mouse buttons can replace the keyboard. The sidetone is click-free (raised cosine envelope) and the keyer runs inside the audio callback, so element and space lengths are sample-accurate.
 - **Receive** – Decodes CW from the microphone. Sensitivity, pitch, filter width, AFC and speed lock can be changed live. A waterfall, an envelope trace, the decoded key tape and a level meter show what the decoder sees.
 - **TX/RX (transceiver)** – Receives by default, touch the key and it switches to transmit, muting the receiver, then returns to receive afterthe break-in delay. 
 - **Training** – Learn to copy (CWtty sends, you type) or to send (CWtty shows, you key). 
 - **Morse table** – A floating reference table.
-- **Settings** – Tone, speed, Farnsworth, paddle mode, volume, envelope, receiver defaults, break-in delay, audio devices and buffer size. Saved automatically.
+- **Settings** – Tone, speed, Farnsworth, keyboard or USB pad, paddle mode, volume, envelope, receiver defaults, break-in delay, audio devices and buffer size. Saved automatically.
 
 
 
@@ -22,6 +22,13 @@ Telegraphy needs to know exactly when a key is pressed **and released**, somethi
 - the native **Windows console API** on Windows (Windows Terminal or the classic console, Windows 10 or later).
 
 The header shows `KEYS kitty` or `KEYS win32` when everything is precise. In other terminals (`KEYS legacy`), releases are guessed from the keyboard auto-repeat: the paddles still work (a tap is one element, holding repeats), but the straight key is approximate. Inside tmux or screen the protocol is usually not passed through.
+
+
+## USB paddles
+
+A paddle connected through a USB adapter that presents itself as a mouse (left button = dit, right button = dah) can key CWtty instead of the keyboard: in the settings set **Key with** to **USB pad (mouse)**. **Swap paddles** exchanges the levers and **Paddle mode** selects Iambic A, Iambic B, Ultimatic, Bug or Straight key (both levers key the tone directly, for a sideswiper or a straight key on the same adapter).
+
+Terminals report mouse buttons with their press and release (SGR mouse mode, or console records on Windows), so the timing is exact even without the kitty protocol. The clicks reach CWtty only while the mouse pointer is over its window. While the pad is selected the terminal's own mouse selection needs Shift.
 
 
 ## Building

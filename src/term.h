@@ -29,6 +29,9 @@ void term_write_str(const char *s);
 /* Tells the shutdown code to pop the kitty keyboard flags we pushed. */
 void term_set_kitty_pushed(int pushed);
 
+/* Mouse button reporting (press and release); turned off again on exit. */
+void term_set_mouse(int on);
+
 #ifndef _WIN32
 /* Reads up to cap bytes, waiting at most timeout_ms. Returns bytes read. */
 int term_read(unsigned char *buf, int cap, int timeout_ms);

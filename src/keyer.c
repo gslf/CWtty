@@ -11,6 +11,7 @@
  *   - Ultimatic: when squeezing, the paddle pressed last wins and repeats.
  *   - Bug: the dit paddle makes automatic dits, the dah paddle is manual
  *     (handled outside the keyer, as a straight key).
+ *   - Straight key: both paddles are manual, the keyer stays idle.
  */
 #include "keyer.h"
 
@@ -26,6 +27,7 @@ const char *keyer_mode_name(int mode)
     case KEYER_IAMBIC_B: return "Iambic B";
     case KEYER_ULTIMATIC: return "Ultimatic";
     case KEYER_BUG: return "Bug";
+    case KEYER_STRAIGHT: return "Straight key";
     default: return "?";
     }
 }
@@ -123,9 +125,13 @@ static void decide_next(keyer_t *k, int dit, int dah)
 
 int keyer_tick(keyer_t *k, int dit, int dah, int dit_edge, int dah_edge)
 {
-    if (k->mode == KEYER_BUG) {
+    if (k->mode == KEYER_BUG || k->mode == KEYER_STRAIGHT) {
         dah = 0;
         dah_edge = 0;
+    }
+    if (k->mode == KEYER_STRAIGHT) {
+        dit = 0;
+        dit_edge = 0;
     }
     if (dit && !k->prev_dit)
         dit_edge = 1;

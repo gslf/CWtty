@@ -8,6 +8,11 @@
  *   - the kitty keyboard protocol (kitty, foot, WezTerm, Ghostty, Alacritty,
  *     iTerm2, ...) with the "report event types" enhancement;
  *   - a legacy fallback that synthesises releases from auto-repeat timing.
+ *
+ * Mouse buttons are reported too when enabled: USB paddles that emulate the
+ * left and right buttons key the transmitter through them. Terminals report
+ * mouse presses and releases exactly (SGR mouse mode on POSIX, console
+ * records on Windows).
  */
 #ifndef CWTTY_INPUT_H
 #define CWTTY_INPUT_H
@@ -46,7 +51,9 @@ enum {
     KEY_F11,
     KEY_F12,
     KEY_FOCUS_IN,
-    KEY_FOCUS_OUT
+    KEY_FOCUS_OUT,
+    KEY_MOUSE_LEFT,
+    KEY_MOUSE_RIGHT
 };
 
 enum {
@@ -73,6 +80,7 @@ typedef struct {
     int       kitty_flags;
     int       release_text;    /* real release events for text keys (Space) */
     int       release_special; /* real release events for arrows */
+    int       mouse;           /* mouse buttons are reported */
 } kbd_info;
 
 /* Detects the best keyboard protocol. Call after term_init(). */
@@ -82,6 +90,9 @@ const kbd_info *input_info(void);
 
 /* Collects pending key events, waiting at most timeout_ms for the first. */
 int input_poll(key_event *out, int cap, int timeout_ms);
+
+/* Turns the reporting of mouse buttons on or off. */
+void input_set_mouse(int on);
 
 /* Legacy fallback: how long a tapped Space is held (one dit). */
 void input_set_legacy_dit_ms(double ms);

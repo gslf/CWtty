@@ -56,6 +56,12 @@ void app_apply_settings(app_t *a)
     p.rise_ms = c->rise_ms;
     audio_set_params(&p);
     input_set_legacy_dit_ms(1200.0 / c->wpm);
+    /* Mouse reporting only with the pad: it takes the mouse away from the
+     * terminal (text selection needs Shift then). */
+    if (!applied_valid || applied.key_input != c->key_input) {
+        app_release_keys(a);
+        input_set_mouse(c->key_input == INPUT_PAD);
+    }
 
     if (!applied_valid || applied.wpm != c->wpm)
         dec_set_speed(&a->txdec, c->wpm, 0);
@@ -204,6 +210,23 @@ void app_refresh_operator(app_t *a)
 
 static int is_keying_key(const key_event *ev)
 {
+    switch (ev->key) {
+    case KEY_SPACE:
+    case KEY_LEFT:
+    case KEY_RIGHT:
+    case KEY_MOUSE_LEFT:
+    case KEY_MOUSE_RIGHT:
+        return 1;
+    default:
+        return 0;
+    }
+}
+
+/* The keys of the input device chosen in the settings. */
+static int is_active_keying_key(const app_t *a, const key_event *ev)
+{
+    if (a->cfg.key_input == INPUT_PAD)
+        return ev->key == KEY_MOUSE_LEFT || ev->key == KEY_MOUSE_RIGHT;
     return ev->key == KEY_SPACE || ev->key == KEY_LEFT || ev->key == KEY_RIGHT;
 }
 
@@ -221,7 +244,7 @@ static void keying_press(app_t *a, int key)
     if (key == KEY_SPACE) {
         a->key_space = 1;
         audio_key_straight(1);
-    } else if (key == KEY_LEFT) {
+    } else if (key == KEY_LEFT || key == KEY_MOUSE_LEFT) {
         a->key_left = 1;
         paddle(a, 1, 1);
     } else {
@@ -239,7 +262,7 @@ static void keying_release(app_t *a, int key)
     if (key == KEY_SPACE) {
         a->key_space = 0;
         audio_key_straight(0);
-    } else if (key == KEY_LEFT) {
+    } else if (key == KEY_LEFT || key == KEY_MOUSE_LEFT) {
         a->key_left = 0;
         paddle(a, 1, 0);
     } else {
@@ -405,7 +428,8 @@ void app_handle_key(app_t *a, const key_event *ev)
             return;
         }
         /* Text-only keys (e.g. pasted) have no release: never key with them. */
-        if (app_keying_allowed(a) && !(ev->mods & (MOD_CTRL | MOD_ALT | MOD_SUPER | MOD_TEXT))) {
+        if (app_keying_allowed(a) && is_active_keying_key(a, ev) &&
+            !(ev->mods & (MOD_CTRL | MOD_ALT | MOD_SUPER | MOD_TEXT))) {
             if (ev->type == EV_PRESS)
                 keying_press(a, ev->key);
             return;
@@ -596,6 +620,7 @@ static void render_header(app_t *a)
     char buf[96];
     const char *kname;
     uint32_t kcol, ocol;
+    int legacy = 0;
 
     scr_fill(rect_make(0, 0, w, 1), ' ', TH_FG, TH_SURFACE_2);
     x += scr_text(x, 0, " CW", TH_ON_ACCENT, TH_ACCENT, A_BOLD);
@@ -629,8 +654,13 @@ static void render_header(app_t *a)
     scr_put(rx + 4, 0, a->audio.out_ok ? 0x25CF : 0x25CB, ocol, TH_SURFACE_2, 0);
     rx -= 2;
 
-    if (a->kbd->proto == KBD_LEGACY || !a->kbd->release_text) {
-        kname = a->kbd->proto == KBD_LEGACY ? "KEYS legacy" : "KEYS partial";
+    if (a->cfg.key_input == INPUT_PAD) {
+        /* Mouse buttons always come with exact releases. */
+        kname = "KEYS usb pad";
+        kcol = TH_FG_FAINT;
+    } else if (a->kbd->proto == KBD_LEGACY || !a->kbd->release_text) {
+        legacy = a->kbd->proto == KBD_LEGACY;
+        kname = legacy ? "KEYS legacy" : "KEYS partial";
         kcol = TH_WARN;
     } else {
         kname = a->kbd->proto == KBD_WIN32 ? "KEYS win32" : "KEYS kitty";
@@ -639,8 +669,7 @@ static void render_header(app_t *a)
     if (rx - utf8_width(kname) - 2 > x + 1) {
         rx -= utf8_width(kname) + 2;
         scr_text(rx, 0, kname, kcol, TH_SURFACE_2, 0);
-        scr_put(rx + utf8_width(kname) + 1, 0, a->kbd->proto == KBD_LEGACY ? 0x25B2 : 0x25CF,
-                a->kbd->proto == KBD_LEGACY ? TH_WARN : TH_OK, TH_SURFACE_2, 0);
+        scr_put(rx + utf8_width(kname) + 1, 0, legacy ? 0x25B2 : 0x25CF, legacy ? TH_WARN : TH_OK, TH_SURFACE_2, 0);
         rx -= 3;
     }
 
@@ -658,7 +687,7 @@ typedef struct {
 
 static int mode_hints(app_t *a, hint_t *h, int cap)
 {
-    int n = 0;
+    int n = 0, pad = a->cfg.key_input == INPUT_PAD;
 #define H(k, l)                                                                          \
     do {                                                                                 \
         if (n < cap) {                                                                   \
@@ -693,8 +722,12 @@ static int mode_hints(app_t *a, hint_t *h, int cap)
     case MODE_HOME:
         break;
     case MODE_TX:
-        H("Space", "Straight key");
-        H("← →", "Paddles");
+        if (pad) {
+            H("USB pad", "Paddles");
+        } else {
+            H("Space", "Straight key");
+            H("← →", "Paddles");
+        }
         H("Bksp", "Delete");
         H("C-l", "Clear");
         break;
@@ -708,7 +741,7 @@ static int mode_hints(app_t *a, hint_t *h, int cap)
         H("C-l", "Clear");
         break;
     case MODE_TRX:
-        H("Space ← →", "Transmit");
+        H(pad ? "USB pad" : "Space ← →", "Transmit");
         H("+ -", "Sensitivity");
         H("< >", "Tune");
         H("z", "Zero-beat");
@@ -726,7 +759,7 @@ static int mode_hints(app_t *a, hint_t *h, int cap)
             if (!app_has_modal(a, MODAL_TABLE))
                 H("Esc", "Setup");
         } else {
-            H("Space ← →", "Send");
+            H(pad ? "USB pad" : "Space ← →", "Send");
             H("Enter", a->tr.state == TS_SEND_RESULT ? "Next" : "Check / skip");
             H("Tab", "Hint");
             H("Bksp", "Retry");

@@ -261,7 +261,8 @@ typedef struct {
     int         capture;      /* F_DEVICE: input */
 } field;
 
-static const char *const KEYER_NAMES[] = {"Iambic A", "Iambic B", "Ultimatic", "Bug"};
+static const char *const KEYER_NAMES[] = {"Iambic A", "Iambic B", "Ultimatic", "Bug", "Straight key"};
+static const char *const INPUT_NAMES[] = {"Keyboard", "USB pad (mouse)"};
 
 static int build_fields(app_t *a, field *f)
 {
@@ -275,6 +276,7 @@ static int build_fields(app_t *a, field *f)
     INT("Tone", tone_hz, 300, 1200, 10, "Hz");
     INT("Speed", wpm, 5, 60, 1, "WPM");
     INT("Farnsworth", farnsworth, 0, 59, 1, "WPM");
+    ENUM("Key with", key_input, INPUT_NAMES, INPUT_COUNT);
     ENUM("Paddle mode", keyer_mode, KEYER_NAMES, KEYER_MODE_COUNT);
     BOOL("Swap paddles", swap_paddles);
     INT("Volume", volume, 0, 100, 5, "%");
@@ -483,7 +485,11 @@ static const char *const HELP[] = {
     "#KEYING  (Transmit, TX/RX, send training)",
     "Space\tStraight key: the tone sounds while it is held",
     "← →\tPaddles: dit and dah (swap them in Settings)",
-    "Modes\tIambic A, Iambic B, Ultimatic and Bug",
+    "USB pad\tA paddle seen as mouse buttons: set Key with",
+    "\tto USB pad in Settings. Left is dit, right dah;",
+    "\tkeep the mouse pointer over this window.",
+    "Modes\tIambic A, Iambic B, Ultimatic, Bug and",
+    "\tStraight key (both paddles key by hand)",
     "Bksp\tDelete the last character (Transmit)",
     "",
     "#RECEIVER  (Receive, TX/RX)",

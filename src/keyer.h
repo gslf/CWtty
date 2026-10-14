@@ -1,5 +1,6 @@
 /*
- * keyer.h - Sample-accurate electronic keyer (Iambic A/B, Ultimatic, Bug).
+ * keyer.h - Sample-accurate electronic keyer (Iambic A/B, Ultimatic, Bug,
+ * Straight key).
  *
  * keyer_tick() is called once per audio sample by the playback callback,
  * so element and space lengths are exact regardless of UI timing.
@@ -14,6 +15,7 @@ typedef enum {
     KEYER_IAMBIC_B,
     KEYER_ULTIMATIC,
     KEYER_BUG,
+    KEYER_STRAIGHT, /* both paddles key directly (sideswiper, straight key) */
     KEYER_MODE_COUNT
 } keyer_mode;
 

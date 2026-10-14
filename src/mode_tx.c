@@ -85,13 +85,16 @@ void keying_panel(app_t *a, rect_t r)
         }
     }
 
-    /* Keycaps, lit while pressed. */
+    /* Keycaps, lit while pressed. The pad has no straight key. */
     if (in.w >= 21 + 24 + 36 && in.h >= rows + 4) {
         int kx = in.x + in.w - 35, ky = y;
         const char *left = a->cfg.swap_paddles ? "◂ DAH" : "◂ DIT";
         const char *right = a->cfg.swap_paddles ? "DIT ▸" : "DAH ▸";
         ui_keycap(rect_make(kx, ky, 10, 3), left, a->key_left);
-        ui_keycap(rect_make(kx + 11, ky, 13, 3), "STRAIGHT", a->key_space);
+        if (a->cfg.key_input == INPUT_PAD)
+            scr_text(kx + 14, ky + 1, "USB PAD", TH_FG_FAINT, COLOR_KEEP, A_BOLD);
+        else
+            ui_keycap(rect_make(kx + 11, ky, 13, 3), "STRAIGHT", a->key_space);
         ui_keycap(rect_make(kx + 25, ky, 10, 3), right, a->key_right);
         scr_put(kx - 3, ky + 1, tone ? 0x25CF : 0x25CB, tone ? TH_ACCENT : TH_FG_GHOST, COLOR_KEEP, 0);
     }
@@ -110,9 +113,13 @@ void tx_render(app_t *a, rect_t r)
     ui_transcript(rect_make(text.x + 2, text.y + 1, text.w - 4, text.h - 2), &a->tx_log, 0, DIR_TX,
                   app_blink(a, 530));
     if (transcript_count(&a->tx_log) == 0 && a->txdec.plen == 0 && text.h > 6) {
-        static const char *const lines[] = {"Space is a straight key: the tone lasts as long as you hold it.",
-                                            "← and → are the paddles of an electronic keyer.",
-                                            "What you send is decoded here."};
+        static const char *const keys[] = {"Space is a straight key: the tone lasts as long as you hold it.",
+                                           "← and → are the paddles of an electronic keyer.",
+                                           "What you send is decoded here."};
+        static const char *const pad[] = {"The levers of the USB pad are the paddles of the keyer.",
+                                          "Keep the mouse pointer over this window.",
+                                          "What you send is decoded here."};
+        const char *const *lines = a->cfg.key_input == INPUT_PAD ? pad : keys;
         int i, y = text.y + text.h / 2 - 2;
         for (i = 0; i < 3; i++)
             if (utf8_width(lines[i]) < text.w - 4)
