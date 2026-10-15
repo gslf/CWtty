@@ -24,12 +24,6 @@ Telegraphy needs to know exactly when a key is pressed **and released**, somethi
 The header shows `KEYS kitty` or `KEYS win32` when everything is precise. In other terminals (`KEYS legacy`), releases are guessed from the keyboard auto-repeat: the paddles still work (a tap is one element, holding repeats), but the straight key is approximate. Inside tmux or screen the protocol is usually not passed through.
 
 
-## USB paddles
-
-A paddle connected through a USB adapter that presents itself as a mouse (left button = dit, right button = dah) can key CWtty instead of the keyboard: in the settings set **Key with** to **USB pad (mouse)**. **Swap paddles** exchanges the levers and **Paddle mode** selects Iambic A, Iambic B, Ultimatic, Bug or Straight key (both levers key the tone directly, for a sideswiper or a straight key on the same adapter).
-
-Terminals report mouse buttons with their press and release (SGR mouse mode, or console records on Windows), so the timing is exact even without the kitty protocol. The clicks reach CWtty only while the mouse pointer is over its window. While the pad is selected the terminal's own mouse selection needs Shift.
-
 
 ## Building
 
