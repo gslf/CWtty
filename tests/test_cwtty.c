@@ -530,9 +530,9 @@ static void test_send_training(void)
     CHECK(a.tr.state == TS_SEND && a.tr.total == 0 && strcmp(a.tr.target, "THE") == 0,
           "strict spacing error prematurely ended the word");
     training_character(&a, "H", &now, 180);
-    training_character(&a, "E", &now, 180);
-    CHECK(a.tr.state == TS_SEND_RESULT && !a.tr.ok && strcmp(a.tr.sent, "T HE") == 0,
-          "a word with an internal word gap passed strict mode");
+    CHECK(a.tr.state == TS_SEND && !a.tr.ok && a.tr.total == 1 && a.tr.sent[0] == 0 &&
+              strcmp(a.tr.target, "THE") == 0,
+          "an internal word gap did not restart strict mode on the next character");
     train_key(&a, &backspace);
     CHECK(a.tr.state == TS_SEND && a.tr.sent[0] == 0 && strcmp(a.tr.target, "THE") == 0, "retry changed target");
     now = 0;
@@ -548,16 +548,213 @@ static void test_send_training(void)
     training_character(&a, "T", &now, 5000);
     training_character(&a, "H", &now, 5000);
     training_character(&a, "A", &now, 180);
-    CHECK(a.tr.state == TS_SEND_RESULT && !a.tr.ok, "relaxed mode accepted a wrong letter");
+    CHECK(a.tr.state == TS_SEND && !a.tr.ok && a.tr.total == 1 && a.tr.sent[0] == 0,
+          "relaxed mode did not restart after a wrong letter");
     training_init(&a, "THE", 1);
     now = 0;
     training_character(&a, "T", &now, 5000);
     train_key(&a, &enter);
-    CHECK(a.tr.state == TS_SEND_RESULT && !a.tr.ok, "an incomplete word passed strict mode");
+    CHECK(a.tr.state == TS_SEND && !a.tr.ok && a.tr.total == 1 && a.tr.sent[0] == 0,
+          "an incomplete word did not restart strict mode");
     a.tr.state = TS_SETUP;
     a.tr.sel = 3; /* Direction, material, hint, spacing, start. */
     train_key(&a, &right);
     CHECK(a.cfg.train_strict == 0, "spacing choice did not toggle");
+}
+
+static void test_send_training_characters(void)
+{
+    static app_t a;
+    double now;
+    int strict, i, j;
+    dec_token unknown = {TOK_UNKNOWN, "*", "..--..--"};
+    printf("send training: reject each wrong character and restart the same item\n");
+    for (strict = 0; strict <= 1; strict++) {
+        for (i = 0; i < 3; i++) {
+            training_init(&a, "HEY", strict);
+            a.tr.streak = a.tr.best = 2;
+            now = 0;
+            for (j = 0; j < i; j++) {
+                char letter[2] = {"HEY"[j], 0};
+                training_character(&a, letter, &now, 180);
+                CHECK(a.tr.state == TS_SEND && a.tr.total == 0 && strlen(a.tr.sent) == (size_t)j + 1,
+                      "a correct send prefix ended the attempt");
+            }
+            a.key_left = a.key_right = a.key_space = 1;
+            training_character(&a, "T", &now, 180);
+            CHECK(a.tr.state == TS_SEND && strcmp(a.tr.target, "HEY") == 0 && a.tr.sent[0] == 0,
+                  "wrong send character at position %d did not restart HEY", i);
+            CHECK(a.tr.total == 1 && a.tr.correct == 0 && !a.tr.ok && a.tr.streak == 0 &&
+                      a.tr.best == 2 && a.tr.nhist == 1 && a.tr.hist[0] == 0,
+                  "send error was not counted exactly once");
+            CHECK(!a.key_left && !a.key_right && !a.key_space && !a.txdec.started && !a.txdec.qlen,
+                  "send retry left keying or decoder state behind");
+            for (j = 0; j < 3; j++)
+                CHECK(a.tr.seen[(int)"HEY"[j]] == (j <= i) && a.tr.err[(int)"HEY"[j]] == (j == i),
+                      "send error penalized an unattempted or correct letter");
+            training_collect(&a, now + 10000);
+            CHECK(a.tr.total == 1, "silence after a send error counted another attempt");
+            now += 10000;
+            training_character(&a, "H", &now, 180);
+            CHECK(strcmp(a.tr.sent, "H") == 0 && a.tr.total == 1, "send retry did not start at H");
+            training_character(&a, "E", &now, 180);
+            training_character(&a, "Y", &now, 180);
+            CHECK(a.tr.state == TS_SEND_RESULT && a.tr.ok && a.tr.total == 2 && a.tr.correct == 1,
+                  "correct send retry was not accepted automatically");
+        }
+    }
+    training_init(&a, "HEY", 0);
+    train_on_sent(&a, &unknown);
+    CHECK(a.tr.state == TS_SEND && a.tr.total == 1 && !a.tr.ok && a.tr.sent[0] == 0,
+          "an undecodable send character was not rejected immediately");
+    training_init(&a, "<AR>", 0);
+    now = 0;
+    training_character(&a, "<AR>", &now, 180);
+    CHECK(a.tr.state == TS_SEND_RESULT && a.tr.ok, "a correctly sent prosign failed");
+    training_init(&a, "=K", 0);
+    now = 0;
+    training_character(&a, "<BT>", &now, 180);
+    CHECK(a.tr.state == TS_SEND && a.tr.total == 0, "a prosign alias ended a correct prefix");
+    training_character(&a, "K", &now, 180);
+    CHECK(a.tr.state == TS_SEND_RESULT && a.tr.ok, "a correctly sent prosign alias failed");
+}
+
+static void test_training_menu(void)
+{
+    static app_t a;
+    static rx_dsp dsp;
+    static const int states[] = {TS_SETUP, TS_LISTEN, TS_RESULT, TS_SEND, TS_SEND_RESULT};
+    static const struct { int key, mode; } commands[] = {
+        {'t', MODE_TX}, {'r', MODE_RX}, {'x', MODE_TRX}, {'p', MODE_TRAIN},
+    };
+    key_event menu = {'x', MOD_CTRL, EV_PRESS, 0};
+    key_event enter = {KEY_ENTER, 0, EV_PRESS, 0};
+    int i, j, ctrl;
+    printf("training menu: change modes and reopen the training setup\n");
+    for (i = 0; i < ARRAY_LEN(states); i++) {
+        for (j = 0; j < ARRAY_LEN(commands); j++) {
+            for (ctrl = 0; ctrl <= 1; ctrl++) {
+                key_event command = {commands[j].key, ctrl ? MOD_CTRL : 0, EV_PRESS, 0};
+                training_init(&a, "HEY", 0);
+                dsp_init(&dsp, 600, 100, 6);
+                a.dsp = &dsp;
+                a.demo = 1; /* Exercise RX/TRX transitions without microphone hardware. */
+                a.tr.state = states[i];
+                a.cfg.train_dir = states[i] == TS_LISTEN || states[i] == TS_RESULT ? TRAIN_COPY : TRAIN_SEND;
+                dec_key(&a.txdec, 1, 0);
+                a.key_left = a.key_right = a.key_space = 1;
+                app_handle_key(&a, &menu);
+                CHECK(app_top_modal(&a) == MODAL_MENU && !app_keying_allowed(&a),
+                      "training did not open the command menu");
+                app_handle_key(&a, &command);
+                CHECK(a.mode == commands[j].mode && app_top_modal(&a) == MODAL_NONE,
+                      "menu command %c failed from training state %d with Ctrl=%d", commands[j].key, states[i], ctrl);
+                CHECK(a.tr.state == TS_SETUP && !a.key_left && !a.key_right && !a.key_space && !a.txdec.started,
+                      "leaving/reopening training did not interrupt the current session");
+                CHECK(a.rx_on == (commands[j].mode == MODE_RX || commands[j].mode == MODE_TRX),
+                      "mode change did not update the receiver");
+                if (commands[j].mode == MODE_TRAIN)
+                    CHECK(!app_keying_allowed(&a), "training setup still allows transmission");
+            }
+        }
+    }
+    training_init(&a, "HEY", 0);
+    a.dsp = &dsp;
+    app_handle_key(&a, &menu);
+    app_handle_key(&a, &enter); /* Training is preselected in its own menu. */
+    CHECK(a.mode == MODE_TRAIN && a.tr.state == TS_SETUP && app_top_modal(&a) == MODAL_NONE,
+          "selecting Training with Enter did not reopen setup");
+}
+
+static void training_copy_init(app_t *a, const char *target)
+{
+    training_init(a, target, 0);
+    a->cfg.train_dir = TRAIN_COPY;
+    a->tr.state = TS_LISTEN;
+}
+
+static void training_type(app_t *a, char ch)
+{
+    key_event letter = {ch, 0, EV_PRESS, (uint32_t)(unsigned char)ch};
+    CHECK(train_key(a, &letter), "copy did not handle character %c", ch);
+}
+
+static void test_copy_training_characters(void)
+{
+    static app_t a;
+    static const struct {
+        const char *target, *answer;
+        int content;
+    } cases[] = {
+        {"HEY", "hey", TRAIN_WORDS},
+        {"KMY", "kmy", TRAIN_CHARS},
+        {"QRA", "qra", TRAIN_CODES},
+        {"5NN", "5nn", TRAIN_CODES},
+        {"?,", "?,", TRAIN_CHARS},
+        {"<AR>", "<ar>", TRAIN_CODES},
+        {"<AR>", "ar", TRAIN_CODES},
+        {"<AR>", "+", TRAIN_CODES},
+        {"=", "<bt>", TRAIN_CHARS},
+        {"=K", "<bt>k", TRAIN_CHARS},
+    };
+    key_event enter = {KEY_ENTER, 0, EV_PRESS, 0};
+    key_event backspace = {KEY_BACKSPACE, 0, EV_PRESS, 0};
+    key_event replay = {'r', MOD_CTRL, EV_PRESS, 0};
+    int i, j;
+    printf("copy training: check each character and restart the same item on error\n");
+    for (i = 0; i < 3; i++) {
+        training_copy_init(&a, "HEY");
+        a.tr.streak = a.tr.best = 2;
+        for (j = 0; j < i; j++) {
+            training_type(&a, "HEY"[j]);
+            CHECK(a.tr.state == TS_LISTEN && a.tr.total == 0 && a.tr.ntyped == j + 1,
+                  "a correct prefix ended the attempt");
+        }
+        training_type(&a, 'T');
+        CHECK(a.tr.state == TS_LISTEN && strcmp(a.tr.target, "HEY") == 0 &&
+                  a.tr.ntyped == 0 && a.tr.typed[0] == 0,
+              "wrong letter at position %d did not restart HEY", i);
+        CHECK(a.tr.total == 1 && a.tr.correct == 0 && !a.tr.ok && a.tr.streak == 0 &&
+                  a.tr.best == 2 && a.tr.nhist == 1 && a.tr.hist[0] == 0,
+              "an immediate error was not counted exactly once");
+        for (j = 0; j < 3; j++)
+            CHECK(a.tr.seen[(int)"HEY"[j]] == (j <= i) && a.tr.err[(int)"HEY"[j]] == (j == i),
+                  "early error penalized an unattempted or correct letter");
+        CHECK(a.toast_warn && strstr(a.toast, "start again"), "restart has no error feedback");
+        training_type(&a, 'h');
+        CHECK(strcmp(a.tr.typed, "H") == 0 && a.tr.total == 1, "retry did not start at H");
+        training_type(&a, 'e');
+        training_type(&a, 'y');
+        CHECK(a.tr.state == TS_RESULT && a.tr.ok && a.tr.total == 2 && a.tr.correct == 1,
+              "correct retry was not accepted automatically");
+    }
+    for (i = 0; i < ARRAY_LEN(cases); i++) {
+        training_copy_init(&a, cases[i].target);
+        a.cfg.train_content = cases[i].content;
+        a.cfg.train_group = 3;
+        for (j = 0; cases[i].answer[j]; j++) {
+            training_type(&a, cases[i].answer[j]);
+            CHECK(a.tr.total == (cases[i].answer[j + 1] ? 0 : 1),
+                  "answer %s was checked at the wrong character", cases[i].answer);
+        }
+        CHECK(a.tr.state == TS_RESULT && a.tr.ok && a.tr.correct == 1,
+              "correct copy %s of %s failed", cases[i].answer, cases[i].target);
+    }
+    training_copy_init(&a, "HEY");
+    training_type(&a, 'H');
+    train_key(&a, &replay);
+    CHECK(strcmp(a.tr.typed, "H") == 0 && a.tr.total == 0, "replay changed the current attempt");
+    train_key(&a, &backspace);
+    CHECK(a.tr.ntyped == 0 && a.tr.typed[0] == 0 && a.tr.total == 0, "backspace counted an error");
+    training_type(&a, 'H');
+    train_key(&a, &enter);
+    CHECK(a.tr.state == TS_LISTEN && a.tr.typed[0] == 0 && a.tr.total == 1 && !a.tr.ok,
+          "submitting an incomplete answer did not restart it");
+    training_copy_init(&a, "<AR>");
+    training_type(&a, '<');
+    training_type(&a, 'X');
+    CHECK(a.tr.state == TS_LISTEN && a.tr.total == 1 && a.tr.typed[0] == 0,
+          "wrong letter in a prosign was not checked immediately");
 }
 
 static void test_copy_training(void)
@@ -567,22 +764,19 @@ static void test_copy_training(void)
     key_event space = {KEY_SPACE, 0, EV_PRESS, ' '};
     key_event letter = {'x', 0, EV_PRESS, 'x'};
     key_event replay = {'r', MOD_CTRL, EV_PRESS, 0};
-    int ok;
-    printf("copy training: the result stays until Enter\n");
-    for (ok = 0; ok <= 1; ok++) {
-        training_init(&a, "THE", 0);
-        a.cfg.train_dir = TRAIN_COPY;
-        a.tr.state = TS_LISTEN;
-        str_copy(a.tr.typed, sizeof a.tr.typed, ok ? "THE" : "TEH");
-        a.tr.ntyped = 3;
-        train_key(&a, &enter);
-        CHECK(a.tr.state == TS_RESULT && a.tr.ok == ok, "Enter did not check the copy");
+    printf("copy training: the correct result stays until Enter\n");
+    {
+        training_copy_init(&a, "THE");
+        training_type(&a, 'T');
+        training_type(&a, 'H');
+        training_type(&a, 'E');
+        CHECK(a.tr.state == TS_RESULT && a.tr.ok, "complete copy was not checked automatically");
         a.now = 60000;
         train_key(&a, &replay);
         train_key(&a, &space);
         train_key(&a, &letter);
         CHECK(a.tr.state == TS_RESULT && strcmp(a.tr.target, "THE") == 0,
-              "%s result went away before Enter", ok ? "correct" : "wrong");
+              "correct result went away before Enter");
         scr_init(1);
         scr_resize(80, 24);
         app_render(&a);
@@ -870,6 +1064,9 @@ int main(void)
     test_settings();
     test_pad_keying();
     test_send_training();
+    test_send_training_characters();
+    test_training_menu();
+    test_copy_training_characters();
     test_copy_training();
     test_training_table_footer();
     test_morse_table();

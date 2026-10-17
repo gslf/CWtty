@@ -77,6 +77,16 @@ static char pick_char(training_t *t, const char *set, int koch)
     return set[n - 1];
 }
 
+static void retry_copy(app_t *a)
+{
+    a->tr.typed[0] = 0;
+    a->tr.ntyped = 0;
+    a->tr.state = TS_LISTEN;
+    a->tr.item_at = a->now;
+    audio_stop_playback();
+    audio_play_text(a->tr.target, a->cfg.wpm, a->cfg.farnsworth, 350.0);
+}
+
 static void retry_send(app_t *a)
 {
     a->tr.sent[0] = 0;
@@ -122,9 +132,7 @@ static void new_item(app_t *a)
     t->item_at = a->now;
 
     if (c->train_dir == TRAIN_COPY) {
-        t->state = TS_LISTEN;
-        audio_stop_playback();
-        audio_play_text(t->target, c->wpm, c->farnsworth, 350.0);
+        retry_copy(a);
     } else {
         retry_send(a);
     }
@@ -148,6 +156,9 @@ static void record(app_t *a, const char *expect, const char *got, int ok)
     training_t *t = &a->tr;
     char te[48][16], tg[48][16];
     int ne = split_tokens(expect, te, 48), ng = split_tokens(got, tg, 48), i;
+    /* An early error says nothing about the characters not attempted. */
+    if (!ok && ng < ne)
+        ne = ng;
     /* Statistics per character of the target, compared token by token so
      * that "=" counts as "=" (not as the letters B and T). */
     for (i = 0; i < ne; i++) {
@@ -195,29 +206,50 @@ static int same_text(const char *x, const char *y)
     return strcmp(nx, ny) == 0;
 }
 
-static int normalized_len(const char *s)
-{
-    char n[96];
-    int i, len = 0;
-    morse_normalize(s, n, sizeof n);
-    for (i = 0; n[i]; i++)
-        if (n[i] != ' ')
-            len++;
-    return len;
-}
-
 static void check_copy(app_t *a)
 {
     training_t *t = &a->tr;
     record(a, t->target, t->typed, same_text(t->target, t->typed));
-    t->state = TS_RESULT;
+    if (t->ok) {
+        t->state = TS_RESULT;
+    } else {
+        retry_copy(a);
+        app_toast(a, 1, "Not quite: listen and start again");
+    }
 }
 
-static void check_send(app_t *a)
+/* Compare normalized prefixes, allowing a prosign still being typed ("<A"). */
+static int copy_prefix_matches(const training_t *t)
 {
-    training_t *t = &a->tr;
-    char sent[96];
-    str_copy(sent, sizeof sent, t->sent);
+    char expect[96], got[96], candidate[96];
+    const char *partial;
+    int i;
+    morse_normalize(t->target, expect, sizeof expect);
+    morse_normalize(t->typed, got, sizeof got);
+    if (strncmp(expect, got, strlen(got)) == 0)
+        return 1;
+    partial = strrchr(t->typed, '<');
+    if (!partial || strchr(partial, '>'))
+        return 0;
+    for (i = 0; i < MORSE_TABLE_COUNT; i++) {
+        const morse_entry *e = &MORSE_TABLE[i];
+        if (e->group != MG_PROSIGN || strncmp(e->text, partial, strlen(partial)) != 0)
+            continue;
+        snprintf(candidate, sizeof candidate, "%.*s%s", (int)(partial - t->typed), t->typed, e->text);
+        morse_normalize(candidate, got, sizeof got);
+        if (strncmp(expect, got, strlen(got)) == 0)
+            return 1;
+    }
+    return 0;
+}
+
+/* -1: wrong character, 0: correct prefix, 1: complete answer. */
+static int compare_send(const app_t *a)
+{
+    char expect[96], sent[96];
+    size_t len;
+    morse_normalize(a->tr.target, expect, sizeof expect);
+    morse_normalize(a->tr.sent, sent, sizeof sent);
     if (!a->cfg.train_strict) {
         char *read = sent, *write = sent;
         while (*read) {
@@ -227,10 +259,25 @@ static void check_send(app_t *a)
         }
         *write = 0;
     }
+    len = strlen(sent);
+    if (strncmp(expect, sent, len) != 0)
+        return -1;
+    return expect[len] == 0 ? 1 : 0;
+}
+
+static void check_send(app_t *a)
+{
+    training_t *t = &a->tr;
     t->send_wpm = dec_wpm(&a->txdec);
     t->send_ratio = dec_ratio(&a->txdec);
-    record(a, t->target, t->sent, same_text(t->target, sent));
-    t->state = TS_SEND_RESULT;
+    record(a, t->target, t->sent, compare_send(a) == 1);
+    if (t->ok) {
+        t->state = TS_SEND_RESULT;
+    } else {
+        app_release_keys(a);
+        retry_send(a);
+        app_toast(a, 1, "Not quite: start sending again from the beginning");
+    }
 }
 
 /* ------------------------------------------------------------------------ */
@@ -277,7 +324,7 @@ void train_on_sent(app_t *a, const dec_token *tok)
     }
     if (len + strlen(tok->text) + 1 < sizeof t->sent)
         strcat(t->sent, tok->text);
-    if (normalized_len(t->sent) >= normalized_len(t->target))
+    if (compare_send(a) != 0)
         check_send(a);
 }
 
@@ -564,7 +611,7 @@ static void render_copy(app_t *a, rect_t in)
         else
             centered(in, y + 1, app_blink(a, 530) ? "▁" : " ", TH_ACCENT, 0);
         y += BIGFONT_ROWS + 2;
-        centered(in, y, "Enter to check  ·  C-r to hear it again", TH_FG_FAINT, 0);
+        centered(in, y, "Each character is checked  ·  C-r to hear it again", TH_FG_FAINT, 0);
         return;
     }
 
@@ -721,8 +768,7 @@ int train_key(app_t *a, const key_event *ev)
                 ch = (char)(ch - 32);
             t->typed[t->ntyped++] = ch;
             t->typed[t->ntyped] = 0;
-            /* Single characters are checked on the first keystroke. */
-            if (a->cfg.train_content == TRAIN_CHARS && a->cfg.train_group == 1 && ch != ' ')
+            if (same_text(t->target, t->typed) || !copy_prefix_matches(t))
                 check_copy(a);
             return 1;
         }

@@ -315,7 +315,8 @@ static void rx_enable(app_t *a, int on)
 
 void app_set_mode(app_t *a, int mode)
 {
-    if (mode == a->mode)
+    /* Selecting Training again interrupts the current session for setup. */
+    if (mode == a->mode && mode != MODE_TRAIN)
         return;
     app_release_keys(a);
     audio_stop_playback();
@@ -439,11 +440,8 @@ void app_handle_key(app_t *a, const key_event *ev)
         return;
 
     /* C-x: the command menu (Emacs-style prefix). */
-    if ((ev->mods & MOD_CTRL) && ev->key == 'x') {
-        if (top == MODAL_MENU)
-            app_close_modal(a);
-        else
-            app_open_modal(a, MODAL_MENU);
+    if ((ev->mods & MOD_CTRL) && ev->key == 'x' && top != MODAL_MENU) {
+        app_open_modal(a, MODAL_MENU);
         return;
     }
     if (top != MODAL_NONE && modal_key(a, top, ev))
@@ -754,7 +752,7 @@ static int mode_hints(app_t *a, hint_t *h, int cap)
             H("Enter", "Start");
         } else if (a->cfg.train_dir == TRAIN_COPY) {
             H("Type", "Answer");
-            H("Enter", "Check / next");
+            H("Enter", a->tr.state == TS_RESULT ? "Next" : "Check / retry");
             H("C-r", "Replay");
             if (!app_has_modal(a, MODAL_TABLE))
                 H("Esc", "Setup");
