@@ -52,4 +52,12 @@ void morse_pretty(const char *code, char *out, size_t cap);
  */
 void morse_normalize(const char *in, char *out, size_t cap);
 
+/*
+ * Sends text at wpm: calls emit with every key-down and key-up segment, in
+ * order. eff_wpm < wpm stretches only the gaps (Farnsworth). Every element
+ * is followed by its one-dit space.
+ */
+typedef void (*morse_emit)(void *ctx, int on, double ms);
+void morse_timing(const char *text, int wpm, int eff_wpm, morse_emit emit, void *ctx);
+
 #endif

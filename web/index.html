@@ -1,0 +1,214 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0b0c0e">
+  <meta name="description" content="Morse telegraphy: transmit, receive, transceive and train.">
+  <title>CWtty</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="icon" href="icon-32.png" type="image/png" sizes="32x32">
+  <link rel="apple-touch-icon" href="apple-touch-icon.png">
+  <meta name="apple-mobile-web-app-title" content="CWtty">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <link rel="stylesheet" href="style.css">
+  <script type="module" src="app.js"></script>
+</head>
+<body data-view="tx">
+  <svg hidden>
+    <symbol id="i-tx" viewBox="0 0 24 24"><path d="M12 20V5M6 11l6-6 6 6"/></symbol>
+    <symbol id="i-rx" viewBox="0 0 24 24"><path d="M12 4v15M6 13l6 6 6-6"/></symbol>
+    <symbol id="i-trx" viewBox="0 0 24 24"><path d="M8 20V5M4 9l4-4 4 4M16 4v15M12 15l4 4 4-4"/></symbol>
+    <symbol id="i-train" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3"/></symbol>
+    <symbol id="i-more" viewBox="0 0 24 24"><path d="M5 12h.01M12 12h.01M19 12h.01" stroke-width="3"/></symbol>
+    <symbol id="i-table" viewBox="0 0 24 24"><path d="M4 7h3M10 7h10M4 12h9M16 12h4M4 17h3M10 17h3M16 17h4"/></symbol>
+    <symbol id="i-settings" viewBox="0 0 24 24"><path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/></symbol>
+    <symbol id="i-help" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9.5 9.5a2.5 2.5 0 1 1 3.5 2.3c-.6.3-1 .8-1 1.5v.7M12 17h.01"/></symbol>
+    <symbol id="i-install" viewBox="0 0 24 24"><path d="M12 4v11M7 10l5 5 5-5M5 20h14"/></symbol>
+  </svg>
+
+  <header>
+    <h1><b>CW</b>tty</h1>
+    <!-- Tabs in the header, a tab bar at the bottom on phones. -->
+    <nav>
+      <button data-mode="tx"><svg class="icon"><use href="#i-tx"/></svg><span>TX</span></button>
+      <button data-mode="rx"><svg class="icon"><use href="#i-rx"/></svg><span>RX</span></button>
+      <button data-mode="trx"><svg class="icon"><use href="#i-trx"/></svg><span>TX/RX</span></button>
+      <button data-mode="train"><svg class="icon"><use href="#i-train"/></svg><span>Training</span></button>
+      <button data-act="menu" class="more"><svg class="icon"><use href="#i-more"/></svg><span>More</span></button>
+    </nav>
+    <p id="status"><span id="speed"></span><span id="out" title="Audio output">OUT</span><span id="in" title="Audio input">IN</span></p>
+    <button data-install hidden title="Install CWtty as an app"><svg class="icon"><use href="#i-install"/></svg><span>Install</span></button>
+    <button data-act="table" title="Morse table"><svg class="icon"><use href="#i-table"/></svg><span>Table</span></button>
+    <button data-act="settings" title="Settings"><svg class="icon"><use href="#i-settings"/></svg><span>Settings</span></button>
+    <button data-act="help" title="Help">?</button>
+  </header>
+
+  <main>
+    <section id="log" class="panel">
+      <h2><span id="log-title">Transmit</span><small id="log-info"></small><button data-act="clear">Clear</button></h2>
+      <div class="text" id="log-tx"></div>
+      <div class="text" id="log-rx"></div>
+      <div class="text" id="log-trx"></div>
+    </section>
+
+    <section id="train" class="panel">
+      <h2><span id="train-title">Training</span><small id="train-info"></small></h2>
+      <form id="setup">
+        <p class="about" id="setup-intro"></p>
+        <label>Direction
+          <select data-key="train_dir"><option value="0">Receive (copy)</option><option value="1">Send (key)</option></select></label>
+        <label>Material <select data-key="train_content" data-names="content"></select></label>
+        <label data-when="chars">Characters <select data-key="train_charset" data-names="charset"></select></label>
+        <label data-when="koch">Koch lesson
+          <input type="range" data-key="train_koch" min="2" step="1"><output></output></label>
+        <p data-when="koch" class="charset" id="koch-chars"></p>
+        <label data-when="chars">Group size
+          <input type="range" data-key="train_group" min="1" max="5" step="1"><output></output></label>
+        <label data-when="send">Pattern hint <input type="checkbox" data-key="train_hint"></label>
+        <label data-when="send">Spacing
+          <select data-key="train_strict"><option value="0">Relaxed (any pause)</option><option value="1">Strict (whole word)</option></select></label>
+        <button type="button" data-act="enter" class="primary">Start session <kbd>Enter</kbd></button>
+        <p class="about" id="setup-about"></p>
+        <p class="about" id="setup-speed"></p>
+      </form>
+      <div id="session">
+        <p id="prompt"></p>
+        <p id="big"></p>
+        <p id="pattern" class="pattern"></p>
+        <p id="meaning"></p>
+        <input id="answer" autocomplete="off" autocorrect="off" autocapitalize="characters" spellcheck="false"
+               enterkeyhint="done" placeholder="Type what you hear" aria-label="Answer">
+        <p id="detail"></p>
+        <p id="live-sent" class="pattern"></p>
+        <p class="actions">
+          <button data-act="tab" id="tab-act"></button>
+          <button data-act="enter" id="enter-act" class="primary"></button>
+          <button data-act="setup">Setup <kbd>Esc</kbd></button>
+        </p>
+        <p id="stats"><span id="recent"></span><span id="score"></span><span id="weak"></span></p>
+      </div>
+    </section>
+
+    <section id="signal" class="panel">
+      <h2>Signal <small id="signal-info"></small></h2>
+      <div id="station">
+        <b id="ptt">RX</b>
+        <span id="breakin-label">LISTENING</span>
+        <span class="bar"><i id="breakin"></i></span>
+        <span id="breakin-ms"></span>
+      </div>
+      <div id="waterfall">
+        <canvas id="wf" height="96"></canvas>
+        <i id="passband"></i>
+        <p class="axis"><span>250</span><span>500</span><span>750</span><span>1000</span><span>1250 Hz</span></p>
+      </div>
+      <div class="lanes">
+        <span>ENV</span><canvas id="lane-env"></canvas>
+        <span>RX</span><canvas id="lane-rx"></canvas>
+        <span class="trx">TX</span><canvas id="lane-tx" class="trx"></canvas>
+        <span>LVL</span><p class="meter"><i id="level"></i><b id="threshold"></b><small id="snr"></small></p>
+      </div>
+      <div class="controls">
+        <label class="rx-only">Input <select id="source"><option value="1">Microphone</option><option value="2">Demo band</option></select></label>
+        <label>Tune <input type="range" data-key="rx_freq" min="200" max="1500" step="10" data-unit=" Hz"><output></output></label>
+        <label class="rx-only">Filter <select data-key="rx_bw" data-names="bandwidth"></select></label>
+        <label>Sensitivity <input type="range" data-key="rx_sens" min="1" max="10" step="1"><output></output></label>
+        <label>AFC <input type="checkbox" data-key="rx_afc"></label>
+        <button data-act="lock" id="lock" class="rx-only" title="Lock or release the receive speed (s)"></button>
+        <button data-act="zero" title="Tune to the strongest signal (z)">Zero-beat</button>
+      </div>
+    </section>
+
+    <section id="keying" class="panel">
+      <h2>Keying <small id="keying-info"></small></h2>
+      <canvas id="tape"></canvas>
+      <p class="live"><b id="glyph"></b><span id="code" class="pattern"></span><small id="name"></small></p>
+      <p class="keys">
+        <button data-input="0"><kbd>←</kbd><span>Dit</span></button>
+        <button data-input="2"><kbd>Space</kbd><span>Key</span></button>
+        <button data-input="1"><kbd>→</kbd><span>Dah</span></button>
+      </p>
+    </section>
+  </main>
+
+  <footer>
+    <p class="hints" data-for="tx"><kbd>Space</kbd> straight key <kbd>← →</kbd> paddles <kbd>Enter</kbd> new line <kbd>Bksp</kbd> delete</p>
+    <p class="hints" data-for="rx"><kbd>+ −</kbd> sensitivity <kbd>&lt; &gt;</kbd> tune <kbd>z</kbd> zero-beat <kbd>b B</kbd> filter <kbd>a</kbd> AFC <kbd>s</kbd> speed lock</p>
+    <p class="hints" data-for="trx"><kbd>Space ← →</kbd> transmit <kbd>+ −</kbd> sensitivity <kbd>&lt; &gt;</kbd> tune <kbd>z</kbd> zero-beat</p>
+    <p class="hints" data-for="train-setup"><kbd>Enter</kbd> start</p>
+    <p class="hints" data-for="train-copy"><kbd>Type</kbd> answer <kbd>Enter</kbd> check, next <kbd>Tab</kbd> replay <kbd>Esc</kbd> setup</p>
+    <p class="hints" data-for="train-send"><kbd>Space ← →</kbd> send <kbd>Enter</kbd> check, next <kbd>Tab</kbd> hint <kbd>Bksp</kbd> retry <kbd>Esc</kbd> setup</p>
+    <output id="toast"></output>
+  </footer>
+
+  <dialog id="menu-dialog">
+    <div class="menu">
+      <button data-install hidden><svg class="icon"><use href="#i-install"/></svg>Install app</button>
+      <button data-act="table"><svg class="icon"><use href="#i-table"/></svg>Morse table</button>
+      <button data-act="settings"><svg class="icon"><use href="#i-settings"/></svg>Settings</button>
+      <button data-act="help"><svg class="icon"><use href="#i-help"/></svg>Help</button>
+    </div>
+  </dialog>
+
+  <dialog id="table-dialog" class="floating">
+    <div>
+      <h2>Morse table <button data-act="table" title="Close">×</button></h2>
+      <div id="table"></div>
+    </div>
+  </dialog>
+
+  <dialog id="settings-dialog">
+    <form method="dialog">
+      <h2>Settings <button title="Close">×</button></h2>
+      <fieldset>
+        <legend>Keyer</legend>
+        <label>Tone <input type="range" data-key="tone_hz" min="300" max="1200" step="10" data-unit=" Hz"><output></output></label>
+        <label>Speed <input type="range" data-key="wpm" min="5" max="60" step="1" data-unit=" WPM"><output></output></label>
+        <label>Farnsworth <input type="range" data-key="farnsworth" min="0" step="1" data-unit=" WPM" data-off><output></output></label>
+        <label>Key with
+          <select data-key="key_input"><option value="0">Keyboard, touch</option><option value="1">USB pad (mouse)</option></select></label>
+        <label>Paddle mode <select data-key="keyer_mode" data-names="keyer"></select></label>
+        <label>Swap paddles <input type="checkbox" data-key="swap_paddles"></label>
+        <label>Volume <input type="range" data-key="volume" min="0" max="100" step="5" data-unit="%"><output></output></label>
+        <label>Tone shape <input type="range" data-key="rise_ms" min="1" max="10" step="1" data-unit=" ms rise"><output></output></label>
+      </fieldset>
+      <fieldset>
+        <legend>Receiver</legend>
+        <label>Speed <input type="range" data-key="rx_wpm" min="5" max="60" step="1" data-unit=" WPM"><output></output></label>
+        <label>Lock speed <input type="checkbox" data-key="rx_lock"></label>
+        <label>Pitch <input type="range" data-key="rx_freq" min="200" max="1500" step="10" data-unit=" Hz"><output></output></label>
+        <label>Filter <select data-key="rx_bw" data-names="bandwidth"></select></label>
+        <label>Sensitivity <input type="range" data-key="rx_sens" min="1" max="10" step="1"><output></output></label>
+        <label>AFC <input type="checkbox" data-key="rx_afc"></label>
+      </fieldset>
+      <fieldset>
+        <legend>Transceiver</legend>
+        <label>Break-in delay <input type="range" data-key="breakin_ms" min="50" max="3000" step="50" data-unit=" ms"><output></output></label>
+        <label>Sidetone <input type="checkbox" data-key="trx_sidetone"></label>
+      </fieldset>
+      <p class="actions"><button type="button" data-act="test">Test tone</button><button class="primary">Done</button></p>
+    </form>
+  </dialog>
+
+  <dialog id="help-dialog">
+    <form method="dialog">
+      <h2>Help <button title="Close">×</button></h2>
+      <dl>
+        <dt>Space</dt><dd>Straight key: the tone sounds while it is held</dd>
+        <dt>← →</dt><dd>Paddles: dit and dah (swap them in Settings). Iambic A, Iambic B, Ultimatic, Bug and Straight key modes</dd>
+        <dt>Touch</dt><dd>The Dit, Key and Dah buttons key like the keyboard</dd>
+        <dt>USB pad</dt><dd>A paddle seen as mouse buttons: set Key with to USB pad, keep the pointer over the page. Left is dit, right dah</dd>
+        <dt>+ −</dt><dd>Receiver sensitivity: higher catches weaker signals, lower rejects noise</dd>
+        <dt>&lt; &gt;</dt><dd>Tune by 10 Hz, or click the waterfall</dd>
+        <dt>z</dt><dd>Zero-beat: tune to the strongest signal</dd>
+        <dt>b B a s</dt><dd>Narrower, wider filter; AFC; lock the receive speed</dd>
+        <dt>TX/RX</dt><dd>Listens by default. Touch the key to transmit: the receiver goes quiet and comes back after the break-in delay</dd>
+        <dt>Training</dt><dd>Enter starts, checks and moves on. A wrong character restarts the item. Tab replays (copy) or toggles the hint (send), Esc goes back to the setup</dd>
+      </dl>
+      <p class="about">CWtty, the PWA of the terminal app: the same C core, compiled to WebAssembly. Works offline once loaded. MIT License.</p>
+    </form>
+  </dialog>
+</body>
+</html>

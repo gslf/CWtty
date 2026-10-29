@@ -59,12 +59,14 @@ add_library(cwtty_core STATIC
     src/morse.c
     src/wordlists.c
     src/keyer.c
+    src/engine.c
     src/audio.c
     src/dsp.c
     src/decoder.c
     src/demo.c
     src/settings.c
     src/transcript.c
+    src/training.c
     src/app.c
     src/mode_home.c
     src/mode_tx.c
@@ -99,7 +101,7 @@ if(CWTTY_BUILD_TESTS)
     add_executable(test_cwtty tests/test_cwtty.c)
     target_link_libraries(test_cwtty PRIVATE cwtty_core)
     add_test(NAME cwtty COMMAND test_cwtty)
-    add_executable(test_audio tests/test_audio.c src/util.c src/keyer.c src/morse.c)
+    add_executable(test_audio tests/test_audio.c src/util.c src/keyer.c src/engine.c src/morse.c)
     target_include_directories(test_audio PRIVATE src)
     target_link_libraries(test_audio PRIVATE miniaudio)
     add_test(NAME audio COMMAND test_audio)

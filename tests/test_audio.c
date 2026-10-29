@@ -28,7 +28,7 @@ static int setup(void)
     A.play.playback.channels = 1;
     at_set(&A.wpm, 20);
     at_set(&A.rise_ms, 5);
-    keyer_init(&A.keyer, KEYER_IAMBIC_B, 2880);
+    engine_init(&A.eng);
     return 1;
 }
 

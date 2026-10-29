@@ -11,6 +11,10 @@
 #define ENV_RATE 1000 /* envelope frames per second */
 #define SETTLE_FRAMES 30 /* let the filters settle before measuring */
 #define SPEC_AVG 3 /* FFT frames per waterfall row (~96 ms) */
+#define RESAMPLE_FC 2000.0f /* passes the CW range, rejects what would alias into it */
+
+/* 4th order Butterworth as two biquads. */
+static const float BUTTER4_Q[2] = {0.54119610f, 1.3065630f};
 
 static float fft_win[DSP_FFT_N];
 static float fft_cos[DSP_FFT_N / 2], fft_sin[DSP_FFT_N / 2];
@@ -71,9 +75,9 @@ static void fft(float *re, float *im)
     }
 }
 
-static void biquad_lowpass(biquad *f, float fc, float q)
+static void biquad_lowpass(biquad *f, double rate, float fc, float q)
 {
-    double w0 = 2.0 * CW_PI * fc / DSP_RATE;
+    double w0 = 2.0 * CW_PI * fc / rate;
     double alpha = sin(w0) / (2.0 * q);
     double c = cos(w0);
     double a0 = 1.0 + alpha;
@@ -94,8 +98,6 @@ static inline float biquad_run(biquad *f, float x)
 
 void dsp_set_bw(rx_dsp *d, float hz)
 {
-    /* 4th order Butterworth as two biquads. */
-    static const float Q[2] = {0.54119610f, 1.3065630f};
     float fc;
     int i;
     d->bw = clampf(hz, 20.0f, 1000.0f);
@@ -103,8 +105,8 @@ void dsp_set_bw(rx_dsp *d, float hz)
     for (i = 0; i < 2; i++) {
         float zi1 = d->lpi[i].z1, zi2 = d->lpi[i].z2;
         float zq1 = d->lpq[i].z1, zq2 = d->lpq[i].z2;
-        biquad_lowpass(&d->lpi[i], fc, Q[i]);
-        biquad_lowpass(&d->lpq[i], fc, Q[i]);
+        biquad_lowpass(&d->lpi[i], DSP_RATE, fc, BUTTER4_Q[i]);
+        biquad_lowpass(&d->lpq[i], DSP_RATE, fc, BUTTER4_Q[i]);
         d->lpi[i].z1 = zi1;
         d->lpi[i].z2 = zi2;
         d->lpq[i].z1 = zq1;
@@ -427,4 +429,29 @@ const float *dsp_wf_row(const rx_dsp *d, int age)
     if (age < 0 || age >= d->wf_count)
         return NULL;
     return d->wf[(d->wf_head - age + DSP_WF_ROWS) % DSP_WF_ROWS];
+}
+
+void dsp_resampler_init(dsp_resampler *r, double in_rate)
+{
+    int i;
+    memset(r, 0, sizeof *r);
+    r->step = in_rate / DSP_RATE;
+    for (i = 0; i < 2; i++)
+        biquad_lowpass(&r->lp[i], in_rate, (float)clampd(RESAMPLE_FC, 1.0, 0.45 * in_rate), BUTTER4_Q[i]);
+}
+
+int dsp_resample(dsp_resampler *r, const float *in, int n, float *out)
+{
+    int i, k = 0;
+    for (i = 0; i < n; i++) {
+        float y = biquad_run(&r->lp[1], biquad_run(&r->lp[0], in[i]));
+        /* The outputs that fall between the previous input and this one. */
+        while (r->pos < 1.0) {
+            out[k++] = r->last + (y - r->last) * (float)r->pos;
+            r->pos += r->step;
+        }
+        r->pos -= 1.0;
+        r->last = y;
+    }
+    return k;
 }

@@ -15,10 +15,10 @@
 
 #include <stdint.h>
 
+#include "engine.h" /* SRC_OPERATOR, SRC_PLAYBACK */
+
 #define AUDIO_RX_RATE 8000
 #define AUDIO_NAME_CAP 128
-
-enum { SRC_OPERATOR = 0, SRC_PLAYBACK = 1 };
 
 typedef struct {
     uint64_t t;   /* playback clock, in samples */

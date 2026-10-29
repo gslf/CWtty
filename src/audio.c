@@ -10,14 +10,13 @@
 #include "miniaudio.h"
 
 #include "atomics.h"
-#include "keyer.h"
+#include "engine.h"
 #include "morse.h"
 #include "util.h"
 
 #define EVENT_RING_BYTES (1024 * sizeof(audio_event))
 #define SEQ_RING_BYTES (8192 * sizeof(seq_seg))
 #define CAPTURE_FRAMES (AUDIO_RX_RATE * 4)
-#define STRAIGHT_MIN_MS 12.0 /* a tap is always audible */
 
 typedef struct {
     uint32_t samples;
@@ -66,12 +65,8 @@ static struct {
     uint64_t base_samples;
 
     /* --- audio thread private --- */
-    keyer_t  keyer;
+    engine_t eng;
     int      seen_dit, seen_dah, seen_straight;
-    uint32_t straight_hold;
-    int      op_state, pb_state;
-    double   phase;
-    float    env;
     int      cur_gen;
     seq_seg  cur_seg;
     uint32_t seg_left;
@@ -123,41 +118,41 @@ static int seq_tick(void)
     return A.cur_seg.on;
 }
 
+static int playback_tick(void *ctx)
+{
+    (void)ctx;
+    return seq_tick();
+}
+
+static void playback_event(void *ctx, uint64_t t, int on, int src)
+{
+    (void)ctx;
+    push_event(t, on, src);
+}
+
 static void playback_callback(ma_device *dev, void *output, const void *input, ma_uint32 frames)
 {
-    float *out = (float *)output;
-    ma_uint32 channels = dev->playback.channels;
-    double rate = (double)dev->sampleRate;
-    double inc = 2.0 * CW_PI * (double)at_get(&A.tone_hz) / rate;
-    int wpm = clampi(at_get(&A.wpm), 5, 80);
-    int mode = at_get(&A.keyer_mode);
-    float vol = (float)clampi(at_get(&A.volume), 0, 100) / 100.0f;
-    float step = 1.0f / (float)(rate * clampi(at_get(&A.rise_ms), 1, 20) / 1000.0);
-    int enabled = at_get(&A.op_enabled);
-    int dit = 0, dah = 0, straight = 0, dit_edge = 0, dah_edge = 0, gen;
-    int dc, ac, sc;
-    uint64_t clock = at_get64(&A.clock);
-    uint64_t last_active = at_get64(&A.op_last_active);
-    ma_uint32 i, c;
+    static const engine_io io = {playback_tick, playback_event, NULL};
+    engine_t *e = &A.eng;
+    int dc = at_get(&A.dit_count), ac = at_get(&A.dah_count), sc = at_get(&A.straight_count);
+    int gen;
     (void)input;
 
-    vol = vol * vol * 0.7f; /* perceptual curve, with headroom */
-    keyer_set(&A.keyer, mode, (uint32_t)(rate * 1.2 / wpm));
-
-    dc = at_get(&A.dit_count);
-    ac = at_get(&A.dah_count);
-    sc = at_get(&A.straight_count);
-    if (enabled) {
-        dit = at_get(&A.dit_level);
-        dah = at_get(&A.dah_level);
-        straight = at_get(&A.straight_level);
-        dit_edge = dc != A.seen_dit;
-        dah_edge = ac != A.seen_dah;
-        /* Taps shorter than a period are still heard: the straight key, the
-         * manual dah lever of the bug and the paddles used as straight keys. */
-        if (sc != A.seen_straight || (mode == KEYER_BUG && dah_edge) ||
-            (mode == KEYER_STRAIGHT && (dit_edge || dah_edge)))
-            A.straight_hold = (uint32_t)(rate * STRAIGHT_MIN_MS / 1000.0);
+    e->tone_hz = at_get(&A.tone_hz);
+    e->wpm = at_get(&A.wpm);
+    e->keyer_mode = at_get(&A.keyer_mode);
+    e->volume = at_get(&A.volume);
+    e->rise_ms = at_get(&A.rise_ms);
+    if (at_get(&A.op_enabled)) {
+        e->dit = at_get(&A.dit_level);
+        e->dah = at_get(&A.dah_level);
+        e->straight = at_get(&A.straight_level);
+        e->dit_edge = dc != A.seen_dit;
+        e->dah_edge = ac != A.seen_dah;
+        e->straight_edge = sc != A.seen_straight;
+    } else {
+        e->dit = e->dah = e->straight = 0;
+        e->dit_edge = e->dah_edge = e->straight_edge = 0;
     }
     A.seen_dit = dc;
     A.seen_dah = ac;
@@ -177,55 +172,12 @@ static void playback_callback(ma_device *dev, void *output, const void *input, m
         A.cur_gen = gen;
     }
 
-    for (i = 0; i < frames; i++) {
-        int k, manual, op, pb;
-        float g, s;
-
-        k = keyer_tick(&A.keyer, dit, dah, i == 0 && dit_edge, i == 0 && dah_edge);
-        manual = straight || A.straight_hold > 0 || (mode == KEYER_BUG && dah) ||
-                 (mode == KEYER_STRAIGHT && (dit || dah));
-        if (A.straight_hold > 0)
-            A.straight_hold--;
-        op = k || manual;
-        pb = seq_tick();
-
-        if (op != A.op_state) {
-            push_event(clock, op, SRC_OPERATOR);
-            A.op_state = op;
-        }
-        if (pb != A.pb_state) {
-            push_event(clock, pb, SRC_PLAYBACK);
-            A.pb_state = pb;
-        }
-        if (op || keyer_busy(&A.keyer))
-            last_active = clock;
-
-        if (op || pb) {
-            A.env += step;
-            if (A.env > 1.0f)
-                A.env = 1.0f;
-        } else {
-            A.env -= step;
-            if (A.env < 0.0f)
-                A.env = 0.0f;
-        }
-        if (A.env > 0.0f) {
-            g = 0.5f - 0.5f * cosf((float)CW_PI * A.env); /* raised cosine */
-            s = (float)sin(A.phase) * g * vol;
-        } else {
-            s = 0.0f;
-        }
-        A.phase += inc;
-        if (A.phase >= 2.0 * CW_PI)
-            A.phase -= 2.0 * CW_PI;
-        for (c = 0; c < channels; c++)
-            out[i * channels + c] = s;
-        clock++;
-    }
-
-    at_set64(&A.clock, clock);
-    at_set64(&A.op_last_active, last_active);
-    at_set(&A.op_busy, keyer_busy(&A.keyer) || A.op_state);
+    e->clock = at_get64(&A.clock);
+    e->last_active = at_get64(&A.op_last_active);
+    engine_render(e, &io, (float *)output, (int)frames, (int)dev->playback.channels, (double)dev->sampleRate);
+    at_set64(&A.clock, e->clock);
+    at_set64(&A.op_last_active, e->last_active);
+    at_set(&A.op_busy, engine_busy(e));
 }
 
 static void capture_callback(ma_device *dev, void *output, const void *input, ma_uint32 frames)
@@ -377,7 +329,7 @@ int audio_init(const char *out_dev, const char *in_dev, int latency_ms)
     at_set(&A.volume, 70);
     at_set(&A.rise_ms, 5);
     at_set(&A.op_enabled, 1);
-    keyer_init(&A.keyer, KEYER_IAMBIC_B, 2880);
+    engine_init(&A.eng);
 
     if (ma_rb_init(EVENT_RING_BYTES, NULL, NULL, &A.events) != MA_SUCCESS)
         return -1;
@@ -423,15 +375,15 @@ int audio_reopen(const char *out_dev, const char *in_dev, int latency_ms)
     A.latency_ms = clampi(latency_ms, 2, 100);
     str_copy(A.in_dev, sizeof A.in_dev, in_dev);
     /* No callback is running now, so the UI may produce these events. */
-    if (A.op_state)
+    if (A.eng.op_state)
         push_event(now_samples, 0, SRC_OPERATOR);
-    if (A.pb_state)
+    if (A.eng.pb_state)
         push_event(now_samples, 0, SRC_PLAYBACK);
-    A.op_state = A.pb_state = 0;
+    A.eng.op_state = A.eng.pb_state = 0;
     at_set(&A.op_busy, 0);
     at_set64(&A.op_last_active, now_samples);
-    A.env = 0.0f;
-    keyer_reset(&A.keyer);
+    A.eng.env = 0.0f;
+    keyer_reset(&A.eng.keyer);
     open_playback(out_dev);
     if (had_capture)
         audio_capture_start();
@@ -631,44 +583,19 @@ static void seq_add(int on, double ms, double rate)
     pending_valid = 1;
 }
 
+static void seq_emit(void *ctx, int on, double ms)
+{
+    seq_add(on, ms, *(const double *)ctx);
+}
+
 void audio_play_text(const char *text, int wpm, int eff_wpm, double lead_ms)
 {
     double rate = A.play_ok ? (double)A.play.sampleRate : 48000.0;
-    double dit = 1200.0 / clampi(wpm, 5, 80);
-    double char_gap = 3.0 * dit, word_gap = 7.0 * dit;
-    char tok[16];
-    int n, first = 1;
 
     if (!A.play_ok)
         return; /* nothing would ever consume the queue */
-    if (eff_wpm > 0 && eff_wpm < wpm) {
-        /* ARRL Farnsworth timing: stretch only the gaps. */
-        double ta = (60.0 * wpm - 37.2 * eff_wpm) / ((double)eff_wpm * wpm) * 1000.0;
-        char_gap = 3.0 * ta / 19.0;
-        word_gap = 7.0 * ta / 19.0;
-    }
-
     seq_add(0, lead_ms > 0 ? lead_ms : 1, rate);
-    while ((n = morse_next_token(text, tok, sizeof tok)) > 0) {
-        const morse_entry *e;
-        const char *c;
-        text += n;
-        if (tok[0] == ' ') {
-            if (!first)
-                seq_add(0, word_gap - char_gap, rate);
-            continue;
-        }
-        e = morse_lookup(tok);
-        if (!e)
-            continue;
-        if (!first)
-            seq_add(0, char_gap - dit, rate);
-        first = 0;
-        for (c = e->code; *c; c++) {
-            seq_add(1, *c == '.' ? dit : 3.0 * dit, rate);
-            seq_add(0, dit, rate);
-        }
-    }
+    morse_timing(text, wpm, eff_wpm, seq_emit, &rate);
     seq_flush_pending();
 }
 

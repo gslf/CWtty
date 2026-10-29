@@ -194,3 +194,38 @@ void morse_normalize(const char *in, char *out, size_t cap)
     while (len > 0 && out[len - 1] == ' ')
         out[--len] = 0;
 }
+
+void morse_timing(const char *text, int wpm, int eff_wpm, morse_emit emit, void *ctx)
+{
+    double dit = 1200.0 / clampi(wpm, 5, 80);
+    double char_gap = 3.0 * dit, word_gap = 7.0 * dit;
+    char tok[16];
+    int n, first = 1;
+
+    if (eff_wpm > 0 && eff_wpm < wpm) {
+        /* ARRL Farnsworth timing: stretch only the gaps. */
+        double ta = (60.0 * wpm - 37.2 * eff_wpm) / ((double)eff_wpm * wpm) * 1000.0;
+        char_gap = 3.0 * ta / 19.0;
+        word_gap = 7.0 * ta / 19.0;
+    }
+    while ((n = morse_next_token(text, tok, sizeof tok)) > 0) {
+        const morse_entry *e;
+        const char *c;
+        text += n;
+        if (tok[0] == ' ') {
+            if (!first)
+                emit(ctx, 0, word_gap - char_gap);
+            continue;
+        }
+        e = morse_lookup(tok);
+        if (!e)
+            continue;
+        if (!first)
+            emit(ctx, 0, char_gap - dit);
+        first = 0;
+        for (c = e->code; *c; c++) {
+            emit(ctx, 1, *c == '.' ? dit : 3.0 * dit);
+            emit(ctx, 0, dit);
+        }
+    }
+}

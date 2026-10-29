@@ -2,6 +2,34 @@
 
 **Morse telegraphy in terminal.** CWtty is a keyboard-driven TUI for CW.  Written in portable C11 for Linux, MacOS and Windows. Its only dependency is [miniaudio](https://miniaud.io), vendored in `third_party/`.
 
+**[Try it in your browser](https://gslf.it/cwtty/)**: nothing to install.
+
+## Install
+
+**Linux and macOS**
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/gslf/CWtty/main/install.sh | sh
+```
+
+**Windows** (PowerShell)
+
+```powershell
+irm https://raw.githubusercontent.com/gslf/CWtty/main/install.ps1 | iex
+```
+
+Then start it with `cwtty`. The script downloads the prebuilt binary of the latest [release](https://github.com/gslf/CWtty/releases) (Linux x86_64 and ARM64, macOS, Windows x64) and puts it in `~/.local/bin` or in `%LOCALAPPDATA%\Programs\cwtty` (added to the PATH). No compiler, no administrator rights. Run it again to update.
+
+To uninstall:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/gslf/CWtty/main/install.sh | sh -s -- --uninstall
+```
+
+```powershell
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/gslf/CWtty/main/install.ps1))) -Uninstall
+```
+
 
 ## Features
 
@@ -25,22 +53,6 @@ The header shows `KEYS kitty` or `KEYS win32` when everything is precise. In oth
 
 
 
-## Building
-
-You need CMake 3.16+, make and a C11 compiler. 
-
-```sh
-make            # configure and build build/cwtty (Release)
-make test       # run the test suite
-make run        # build and start
-make install    # install to /usr/local (PREFIX=... to change)
-```
-
-**Windows**: open a Developer Command Prompt and run `cmake -S . -B build` followed by `cmake --build build --config Release`, or
-use MinGW with `make GENERATOR="MinGW Makefiles"`.
-
-**macOS**: install the Xcode command line tools (`xcode-select --install`) and CMake, then `make`.
-
 ## Usage
 
 ```
@@ -56,6 +68,30 @@ cwtty [options]
 ```
 
 Settings are stored in `$XDG_CONFIG_HOME/cwtty/cwtty.conf` (Linux, default `~/.config/cwtty/cwtty.conf`), `~/Library/Application Support/cwtty/` (macOS) or `%APPDATA%\cwtty\` (Windows).
+
+## Web app
+
+CWtty also runs in the browser at **[gslf.it/cwtty](https://gslf.it/cwtty/)**, as an installable PWA (works offline). On a touch screen the Dit, Key and Dah buttons are the key.
+
+It is the same C core compiled to WebAssembly. The microphone and the offline mode need HTTPS (or localhost). 
+
+
+## Building from source
+
+You need CMake 3.16+ and a C11 compiler (Visual Studio or MinGW on Windows).
+
+```sh
+make            # build build/cwtty (Release)
+make test       # run the test suite
+make install    # install to /usr/local (PREFIX=... to change)
+```
+
+Without make: `cmake -S . -B build` and `cmake --build build --config Release`.
+
+### Releasing
+
+Set the new `VERSION` in `CMakeLists.txt`, commit, then run `make release`: it runs the tests, tags `vX.Y.Z` and pushes the tag. The [release workflow](.github/workflows/release.yml) builds the binaries for every platform and publishes them as the GitHub release that the install scripts download.
+
 
 ## The receiver
 

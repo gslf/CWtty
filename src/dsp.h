@@ -116,4 +116,20 @@ float dsp_env_at(const rx_dsp *d, double t_ms);
 /* Waterfall row "age" rows ago (0 = newest), or NULL. */
 const float *dsp_wf_row(const rx_dsp *d, int age);
 
+/*
+ * Brings audio from a device rate down to DSP_RATE, for backends that
+ * cannot capture at it: a 4th order Butterworth anti-alias filter, then
+ * linear interpolation.
+ */
+typedef struct {
+    biquad lp[2];
+    double step; /* input samples per output sample */
+    double pos;  /* where the next output falls after the last input */
+    float  last; /* last filtered input */
+} dsp_resampler;
+
+void dsp_resampler_init(dsp_resampler *r, double in_rate);
+/* Returns the samples written to out: at most n * DSP_RATE / in_rate + 1. */
+int  dsp_resample(dsp_resampler *r, const float *in, int n, float *out);
+
 #endif

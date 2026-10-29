@@ -673,7 +673,7 @@ static void training_copy_init(app_t *a, const char *target)
     a->tr.state = TS_LISTEN;
 }
 
-static void training_type(app_t *a, char ch)
+static void copy_type(app_t *a, char ch)
 {
     key_event letter = {ch, 0, EV_PRESS, (uint32_t)(unsigned char)ch};
     CHECK(train_key(a, &letter), "copy did not handle character %c", ch);
@@ -706,11 +706,11 @@ static void test_copy_training_characters(void)
         training_copy_init(&a, "HEY");
         a.tr.streak = a.tr.best = 2;
         for (j = 0; j < i; j++) {
-            training_type(&a, "HEY"[j]);
+            copy_type(&a, "HEY"[j]);
             CHECK(a.tr.state == TS_LISTEN && a.tr.total == 0 && a.tr.ntyped == j + 1,
                   "a correct prefix ended the attempt");
         }
-        training_type(&a, 'T');
+        copy_type(&a, 'T');
         CHECK(a.tr.state == TS_LISTEN && strcmp(a.tr.target, "HEY") == 0 &&
                   a.tr.ntyped == 0 && a.tr.typed[0] == 0,
               "wrong letter at position %d did not restart HEY", i);
@@ -721,10 +721,10 @@ static void test_copy_training_characters(void)
             CHECK(a.tr.seen[(int)"HEY"[j]] == (j <= i) && a.tr.err[(int)"HEY"[j]] == (j == i),
                   "early error penalized an unattempted or correct letter");
         CHECK(a.toast_warn && strstr(a.toast, "start again"), "restart has no error feedback");
-        training_type(&a, 'h');
+        copy_type(&a, 'h');
         CHECK(strcmp(a.tr.typed, "H") == 0 && a.tr.total == 1, "retry did not start at H");
-        training_type(&a, 'e');
-        training_type(&a, 'y');
+        copy_type(&a, 'e');
+        copy_type(&a, 'y');
         CHECK(a.tr.state == TS_RESULT && a.tr.ok && a.tr.total == 2 && a.tr.correct == 1,
               "correct retry was not accepted automatically");
     }
@@ -733,7 +733,7 @@ static void test_copy_training_characters(void)
         a.cfg.train_content = cases[i].content;
         a.cfg.train_group = 3;
         for (j = 0; cases[i].answer[j]; j++) {
-            training_type(&a, cases[i].answer[j]);
+            copy_type(&a, cases[i].answer[j]);
             CHECK(a.tr.total == (cases[i].answer[j + 1] ? 0 : 1),
                   "answer %s was checked at the wrong character", cases[i].answer);
         }
@@ -741,18 +741,18 @@ static void test_copy_training_characters(void)
               "correct copy %s of %s failed", cases[i].answer, cases[i].target);
     }
     training_copy_init(&a, "HEY");
-    training_type(&a, 'H');
+    copy_type(&a, 'H');
     train_key(&a, &replay);
     CHECK(strcmp(a.tr.typed, "H") == 0 && a.tr.total == 0, "replay changed the current attempt");
     train_key(&a, &backspace);
     CHECK(a.tr.ntyped == 0 && a.tr.typed[0] == 0 && a.tr.total == 0, "backspace counted an error");
-    training_type(&a, 'H');
+    copy_type(&a, 'H');
     train_key(&a, &enter);
     CHECK(a.tr.state == TS_LISTEN && a.tr.typed[0] == 0 && a.tr.total == 1 && !a.tr.ok,
           "submitting an incomplete answer did not restart it");
     training_copy_init(&a, "<AR>");
-    training_type(&a, '<');
-    training_type(&a, 'X');
+    copy_type(&a, '<');
+    copy_type(&a, 'X');
     CHECK(a.tr.state == TS_LISTEN && a.tr.total == 1 && a.tr.typed[0] == 0,
           "wrong letter in a prosign was not checked immediately");
 }
@@ -767,9 +767,9 @@ static void test_copy_training(void)
     printf("copy training: the correct result stays until Enter\n");
     {
         training_copy_init(&a, "THE");
-        training_type(&a, 'T');
-        training_type(&a, 'H');
-        training_type(&a, 'E');
+        copy_type(&a, 'T');
+        copy_type(&a, 'H');
+        copy_type(&a, 'E');
         CHECK(a.tr.state == TS_RESULT && a.tr.ok, "complete copy was not checked automatically");
         a.now = 60000;
         train_key(&a, &replay);
@@ -1055,6 +1055,41 @@ static void test_receiver_noise_only(void)
     free(x);
 }
 
+/* RMS of the second half of 1 s of a tone at in_rate, brought to 8 kHz;
+ * *excess gets the samples produced beyond the exact rate ratio. */
+static double resampled_rms(double in_rate, double hz, int *excess)
+{
+    static float in[128], out[DSP_RATE + 64];
+    dsp_resampler r;
+    double acc = 0;
+    long t = 0;
+    int n = 0, i;
+    dsp_resampler_init(&r, in_rate);
+    while (t < (long)in_rate) {
+        for (i = 0; i < 128; i++, t++)
+            in[i] = (float)(0.5 * sin(2.0 * CW_PI * hz * (double)t / in_rate));
+        n += dsp_resample(&r, in, 128, out + n);
+    }
+    for (i = n / 2; i < n; i++)
+        acc += (double)out[i] * out[i];
+    *excess = n - (int)((double)t * DSP_RATE / in_rate);
+    return sqrt(acc / (n - n / 2));
+}
+
+static void test_resampler(void)
+{
+    static const double rates[] = {44100, 48000, 96000};
+    int i, n;
+    printf("resampler: device rates to 8 kHz, alias rejection\n");
+    for (i = 0; i < ARRAY_LEN(rates); i++) {
+        double rms = resampled_rms(rates[i], 700, &n);
+        CHECK(abs(n) <= 1, "%.0f Hz gave %d samples too many", rates[i], n);
+        CHECK(fabs(rms / (0.5 / sqrt(2.0)) - 1.0) < 0.03, "%.0f Hz changed a 700 Hz tone: rms %.3f", rates[i], rms);
+        rms = resampled_rms(rates[i], 7300, &n);
+        CHECK(rms < 0.01 * 0.5 / sqrt(2.0), "%.0f Hz let 7300 Hz alias into the band: rms %.4f", rates[i], rms);
+    }
+}
+
 int main(void)
 {
     test_input_parser();
@@ -1076,6 +1111,7 @@ int main(void)
     test_decoder_resync();
     test_receiver();
     test_receiver_noise_only();
+    test_resampler();
     if (failures) {
         printf("%d check(s) failed\n", failures);
         return 1;

@@ -107,6 +107,21 @@ static const field_t FIELDS[] = {
     F_INT(train_strict),  F_INT(key_input),
 };
 
+static const field_t *find_field(const char *key)
+{
+    int i;
+    for (i = 0; i < ARRAY_LEN(FIELDS); i++)
+        if (strcmp(FIELDS[i].key, key) == 0)
+            return &FIELDS[i];
+    return NULL;
+}
+
+int *settings_field(settings_t *s, const char *key)
+{
+    const field_t *f = find_field(key);
+    return f && !f->is_string ? (int *)((char *)s + f->offset) : NULL;
+}
+
 static char *trim(char *s)
 {
     char *e;
@@ -122,11 +137,11 @@ int settings_load(settings_t *s, const char *path)
 {
     FILE *f = fopen(path, "r");
     char line[512];
-    int i;
     if (!f)
         return -1;
     while (fgets(line, sizeof line, f)) {
-        char *eq, *key, *val;
+        const field_t *fd;
+        char *eq, *key, *val, *p;
         key = trim(line);
         if (*key == '#' || *key == 0)
             continue;
@@ -136,21 +151,19 @@ int settings_load(settings_t *s, const char *path)
         *eq = 0;
         key = trim(key);
         val = trim(eq + 1);
-        for (i = 0; i < ARRAY_LEN(FIELDS); i++) {
-            char *p;
-            if (strcmp(FIELDS[i].key, key) != 0)
-                continue;
-            p = (char *)s + FIELDS[i].offset;
-            if (FIELDS[i].is_string)
-                str_copy(p, SETTINGS_NAME_CAP, val);
-            else {
-                char *end;
-                long value;
-                errno = 0;
-                value = strtol(val, &end, 10);
-                if (end != val && *end == 0 && errno != ERANGE && value >= INT_MIN && value <= INT_MAX)
-                    *(int *)p = (int)value;
-            }
+        fd = find_field(key);
+        if (!fd)
+            continue;
+        p = (char *)s + fd->offset;
+        if (fd->is_string) {
+            str_copy(p, SETTINGS_NAME_CAP, val);
+        } else {
+            char *end;
+            long value;
+            errno = 0;
+            value = strtol(val, &end, 10);
+            if (end != val && *end == 0 && errno != ERANGE && value >= INT_MIN && value <= INT_MAX)
+                *(int *)p = (int)value;
         }
     }
     fclose(f);

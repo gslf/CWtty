@@ -56,6 +56,9 @@ void settings_clamp(settings_t *s);
 int  settings_load(settings_t *s, const char *path);
 int  settings_save(const settings_t *s, const char *path);
 
+/* The integer setting stored under key ("wpm", "rx_sens", ...), or NULL. */
+int *settings_field(settings_t *s, const char *key);
+
 /* Index of the closest offered bandwidth. */
 int rx_bw_index(int hz);
 

@@ -1,0 +1,112 @@
+# Builds the prebuilt binaries and publishes them as a GitHub release.
+#
+# Push a tag vX.Y.Z (make release does it) to build every platform and
+# publish the release. Run it by hand (workflow_dispatch) to only build and
+# check the packages, without publishing anything.
+#
+# The asset names carry no version, so the installers can always fetch
+# https://github.com/gslf/CWtty/releases/latest/download/<asset>.
+
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ${{ matrix.asset }}
+    runs-on: ${{ matrix.os }}
+    # Linux binaries are built on Debian 11 (glibc 2.31) so that they also run
+    # on older distributions.
+    container: ${{ matrix.container }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            container: debian:bullseye
+            asset: cwtty-linux-x86_64.tar.gz
+          - os: ubuntu-24.04-arm
+            container: debian:bullseye
+            asset: cwtty-linux-aarch64.tar.gz
+          - os: macos-15
+            asset: cwtty-macos-universal.tar.gz
+            cmake_args: -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0
+          - os: windows-2025
+            asset: cwtty-windows-x86_64.zip
+            # Static C runtime: no Visual C++ redistributable needed.
+            cmake_args: -A x64 -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install the toolchain
+        if: matrix.container
+        run: apt-get update && apt-get install -y --no-install-recommends build-essential cmake
+
+      - name: Check the tag against the project version
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          version=$(tr -d '\r' < CMakeLists.txt | sed -n 's/^ *VERSION \([0-9.]*\)$/\1/p' | head -n 1)
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match the version in CMakeLists.txt ($version)"
+            exit 1
+          fi
+
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release ${{ matrix.cmake_args }}
+
+      - name: Build
+        run: cmake --build build --config Release --parallel 4
+
+      - name: Test
+        run: cd build && ctest -C Release --output-on-failure
+
+      - name: Package
+        run: |
+          strip=--strip
+          [ "$RUNNER_OS" = Windows ] && strip=
+          cmake --install build --config Release --prefix stage $strip
+          mkdir pkg
+          cp stage/bin/* LICENSE README.md pkg/
+          ./pkg/cwtty --version
+          case "${{ matrix.asset }}" in
+            *.zip) (cd pkg && 7z a -tzip "../${{ matrix.asset }}" *) ;;
+            *)     COPYFILE_DISABLE=1 tar -C pkg -czf "${{ matrix.asset }}" . ;;
+          esac
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.asset }}
+          path: ${{ matrix.asset }}
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd dist
+          sha256sum cwtty-* > SHA256SUMS
+          cat SHA256SUMS
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+            --title "CWtty ${GITHUB_REF_NAME#v}" --generate-notes \
+            cwtty-* SHA256SUMS

@@ -10,39 +10,13 @@
 #include "dsp.h"
 #include "input.h"
 #include "settings.h"
+#include "training.h"
 #include "transcript.h"
 #include "ui.h"
 
 typedef enum { MODE_HOME, MODE_TX, MODE_RX, MODE_TRX, MODE_TRAIN, MODE_COUNT } app_mode;
 
 typedef enum { MODAL_NONE, MODAL_MENU, MODAL_TABLE, MODAL_SETTINGS, MODAL_HELP } modal_kind;
-
-/* ------------------------------------------------------------------------ */
-/* Training                                                                  */
-/* ------------------------------------------------------------------------ */
-
-enum { TRAIN_COPY = 0, TRAIN_SEND = 1 };
-enum { TRAIN_CHARS, TRAIN_WORDS, TRAIN_CODES };
-enum { CHARSET_KOCH, CHARSET_LETTERS, CHARSET_DIGITS, CHARSET_PUNCT, CHARSET_ALNUM, CHARSET_ALL };
-enum { TS_SETUP, TS_LISTEN, TS_RESULT, TS_SEND, TS_SEND_RESULT };
-
-typedef struct {
-    int         state;
-    int         sel;          /* selected row in the setup form */
-    char        target[48];   /* the item to copy or to send */
-    const char *meaning;      /* explanation of a Q-code / abbreviation */
-    char        typed[48];    /* receive: what the student typed */
-    int         ntyped;
-    char        sent[96];     /* send: what the decoder read */
-    int         ok;           /* result of the last item */
-    double      item_at;      /* when the item started */
-    int         total, correct, streak, best;
-    int         err[128], seen[128]; /* per character statistics */
-    unsigned char hist[32];          /* recent results, 1 = correct */
-    int         nhist;
-    int         last_pick;
-    double      send_wpm, send_ratio; /* timing of the last sent item */
-} training_t;
 
 /* ------------------------------------------------------------------------ */
 /* Application                                                               */

@@ -1,8 +1,6 @@
 /*
- * mode_train.c - Training: learn to copy by ear (the program sends, you
- * type) and to send (the program shows, you key). Material: single
- * characters (Koch method or fixed sets), common English words, Q-codes and
- * CW abbreviations. Characters you miss come back more often.
+ * mode_train.c - The training screen: the setup form and the session
+ * views. The sessions themselves live in training.c.
  */
 #include <stdio.h>
 #include <string.h>
@@ -11,272 +9,27 @@
 #include "bigfont.h"
 #include "morse.h"
 #include "theme.h"
+#include "training.h"
 #include "util.h"
 #include "wordlists.h"
 
-static const char *const CHARSET_NAMES[] = {"Koch method", "Letters", "Numbers", "Punctuation",
-                                            "Letters & numbers", "Everything"};
-static const char *const CONTENT_NAMES[] = {"Characters", "English words", "Q-codes & abbreviations"};
-
-static const char LETTERS[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
-static const char DIGITS[] = "0123456789";
-static const char PUNCT[] = ".,?/=-()'\":;!@";
-
-/* ------------------------------------------------------------------------ */
-/* Material                                                                  */
-/* ------------------------------------------------------------------------ */
-
-static void charset_string(const settings_t *c, char *out, size_t cap)
+/* Carries out what the training asks for. */
+static void train_do(app_t *a, int fx)
 {
-    out[0] = 0;
-    switch (c->train_charset) {
-    case CHARSET_KOCH: {
-        int n = clampi(c->train_koch, 2, (int)strlen(KOCH_ORDER));
-        str_copy(out, (size_t)mini((int)cap, n + 1), KOCH_ORDER);
-        break;
-    }
-    case CHARSET_LETTERS:
-        str_copy(out, cap, LETTERS);
-        break;
-    case CHARSET_DIGITS:
-        str_copy(out, cap, DIGITS);
-        break;
-    case CHARSET_PUNCT:
-        str_copy(out, cap, PUNCT);
-        break;
-    case CHARSET_ALNUM:
-        snprintf(out, cap, "%s%s", LETTERS, DIGITS);
-        break;
-    default:
-        snprintf(out, cap, "%s%s%s", LETTERS, DIGITS, PUNCT);
-        break;
-    }
-}
-
-/* Weighted pick: characters you get wrong come back more often, and in a
- * Koch lesson the newest character is favoured. */
-static char pick_char(training_t *t, const char *set, int koch)
-{
-    double w[64], total = 0, r;
-    int n = (int)strlen(set), i;
-    if (n > 64)
-        n = 64;
-    for (i = 0; i < n; i++) {
-        unsigned char c = (unsigned char)set[i];
-        w[i] = 1.0 + 4.0 * (double)t->err[c & 127] / (double)(t->seen[c & 127] + 2);
-        if (koch && i == n - 1)
-            w[i] *= 2.0;
-        total += w[i];
-    }
-    r = (double)rng_u32() / 4294967296.0 * total;
-    for (i = 0; i < n; i++) {
-        r -= w[i];
-        if (r <= 0)
-            return set[i];
-    }
-    return set[n - 1];
-}
-
-static void retry_copy(app_t *a)
-{
-    a->tr.typed[0] = 0;
-    a->tr.ntyped = 0;
-    a->tr.state = TS_LISTEN;
-    a->tr.item_at = a->now;
-    audio_stop_playback();
-    audio_play_text(a->tr.target, a->cfg.wpm, a->cfg.farnsworth, 350.0);
-}
-
-static void retry_send(app_t *a)
-{
-    a->tr.sent[0] = 0;
-    a->tr.state = TS_SEND;
-    a->tr.item_at = a->now;
-    dec_clear(&a->txdec);
-}
-
-static void new_item(app_t *a)
-{
-    training_t *t = &a->tr;
-    const settings_t *c = &a->cfg;
-    int idx, tries;
-
-    t->meaning = NULL;
-    switch (c->train_content) {
-    case TRAIN_CHARS: {
-        char set[96];
-        int g = clampi(c->train_group, 1, 5), i;
-        charset_string(c, set, sizeof set);
-        for (i = 0; i < g; i++)
-            t->target[i] = pick_char(t, set, c->train_charset == CHARSET_KOCH);
-        t->target[g] = 0;
-        break;
-    }
-    case TRAIN_WORDS:
-        for (tries = 0, idx = rng_int(WORDS_EN_COUNT); idx == t->last_pick && tries < 4; tries++)
-            idx = rng_int(WORDS_EN_COUNT);
-        t->last_pick = idx;
-        str_copy(t->target, sizeof t->target, WORDS_EN[idx]);
-        break;
-    default:
-        for (tries = 0, idx = rng_int(CW_CODES_COUNT); idx == t->last_pick && tries < 4; tries++)
-            idx = rng_int(CW_CODES_COUNT);
-        t->last_pick = idx;
-        str_copy(t->target, sizeof t->target, CW_CODES[idx].code);
-        t->meaning = CW_CODES[idx].meaning;
-        break;
-    }
-    t->typed[0] = 0;
-    t->ntyped = 0;
-    t->sent[0] = 0;
-    t->item_at = a->now;
-
-    if (c->train_dir == TRAIN_COPY) {
-        retry_copy(a);
-    } else {
-        retry_send(a);
-    }
-}
-
-/* Splits text into tokens ("A", "<AR>"), skipping spaces. */
-static int split_tokens(const char *s, char (*out)[16], int cap)
-{
-    char tok[16];
-    int n, k = 0;
-    while (k < cap && (n = morse_next_token(s, tok, sizeof tok)) > 0) {
-        s += n;
-        if (tok[0] != ' ')
-            str_copy(out[k++], 16, tok);
-    }
-    return k;
-}
-
-static void record(app_t *a, const char *expect, const char *got, int ok)
-{
-    training_t *t = &a->tr;
-    char te[48][16], tg[48][16];
-    int ne = split_tokens(expect, te, 48), ng = split_tokens(got, tg, 48), i;
-    /* An early error says nothing about the characters not attempted. */
-    if (!ok && ng < ne)
-        ne = ng;
-    /* Statistics per character of the target, compared token by token so
-     * that "=" counts as "=" (not as the letters B and T). */
-    for (i = 0; i < ne; i++) {
-        char a1[16], b1[16];
-        unsigned char ch = (unsigned char)te[i][0];
-        if (te[i][1] != 0)
-            continue; /* prosigns and multi-letter tokens: no per-character stats */
-        morse_normalize(te[i], a1, sizeof a1);
-        b1[0] = 0;
-        if (i < ng)
-            morse_normalize(tg[i], b1, sizeof b1);
-        t->seen[ch & 127]++;
-        if (strcmp(a1, b1) != 0)
-            t->err[ch & 127]++;
-        else if (t->err[ch & 127] > 0 && ok)
-            t->err[ch & 127]--; /* forgive slowly when you get it right */
-    }
-    t->total++;
-    if (ok) {
-        t->correct++;
-        t->streak++;
-        if (t->streak > t->best)
-            t->best = t->streak;
-    } else {
-        t->streak = 0;
-    }
-    memmove(t->hist + 1, t->hist, sizeof t->hist - 1);
-    t->hist[0] = (unsigned char)ok;
-    if (t->nhist < (int)sizeof t->hist)
-        t->nhist++;
-    t->ok = ok;
-
-    /* Koch method: suggest the next lesson at 90% over 20+ items. */
-    if (a->cfg.train_content == TRAIN_CHARS && a->cfg.train_charset == CHARSET_KOCH && t->total >= 20 &&
-        t->correct * 10 >= t->total * 9 && t->total % 10 == 0 && a->cfg.train_koch < (int)strlen(KOCH_ORDER))
-        app_toast(a, 0, "%d%% correct: ready for Koch lesson %d", t->correct * 100 / t->total,
+    if (fx & TRAIN_KOCH)
+        app_toast(a, 0, "%d%% correct: ready for Koch lesson %d", a->tr.correct * 100 / a->tr.total,
                   a->cfg.train_koch + 1);
-}
-
-static int same_text(const char *x, const char *y)
-{
-    char nx[96], ny[96];
-    morse_normalize(x, nx, sizeof nx);
-    morse_normalize(y, ny, sizeof ny);
-    return strcmp(nx, ny) == 0;
-}
-
-static void check_copy(app_t *a)
-{
-    training_t *t = &a->tr;
-    record(a, t->target, t->typed, same_text(t->target, t->typed));
-    if (t->ok) {
-        t->state = TS_RESULT;
-    } else {
-        retry_copy(a);
-        app_toast(a, 1, "Not quite: listen and start again");
+    if (fx & TRAIN_WRONG) {
+        if (a->cfg.train_dir == TRAIN_SEND)
+            app_release_keys(a);
+        app_toast(a, 1, a->cfg.train_dir == TRAIN_COPY ? "Not quite: listen and start again"
+                                                         : "Not quite: start sending again from the beginning");
     }
-}
-
-/* Compare normalized prefixes, allowing a prosign still being typed ("<A"). */
-static int copy_prefix_matches(const training_t *t)
-{
-    char expect[96], got[96], candidate[96];
-    const char *partial;
-    int i;
-    morse_normalize(t->target, expect, sizeof expect);
-    morse_normalize(t->typed, got, sizeof got);
-    if (strncmp(expect, got, strlen(got)) == 0)
-        return 1;
-    partial = strrchr(t->typed, '<');
-    if (!partial || strchr(partial, '>'))
-        return 0;
-    for (i = 0; i < MORSE_TABLE_COUNT; i++) {
-        const morse_entry *e = &MORSE_TABLE[i];
-        if (e->group != MG_PROSIGN || strncmp(e->text, partial, strlen(partial)) != 0)
-            continue;
-        snprintf(candidate, sizeof candidate, "%.*s%s", (int)(partial - t->typed), t->typed, e->text);
-        morse_normalize(candidate, got, sizeof got);
-        if (strncmp(expect, got, strlen(got)) == 0)
-            return 1;
-    }
-    return 0;
-}
-
-/* -1: wrong character, 0: correct prefix, 1: complete answer. */
-static int compare_send(const app_t *a)
-{
-    char expect[96], sent[96];
-    size_t len;
-    morse_normalize(a->tr.target, expect, sizeof expect);
-    morse_normalize(a->tr.sent, sent, sizeof sent);
-    if (!a->cfg.train_strict) {
-        char *read = sent, *write = sent;
-        while (*read) {
-            if (*read != ' ')
-                *write++ = *read;
-            read++;
-        }
-        *write = 0;
-    }
-    len = strlen(sent);
-    if (strncmp(expect, sent, len) != 0)
-        return -1;
-    return expect[len] == 0 ? 1 : 0;
-}
-
-static void check_send(app_t *a)
-{
-    training_t *t = &a->tr;
-    t->send_wpm = dec_wpm(&a->txdec);
-    t->send_ratio = dec_ratio(&a->txdec);
-    record(a, t->target, t->sent, compare_send(a) == 1);
-    if (t->ok) {
-        t->state = TS_SEND_RESULT;
-    } else {
-        app_release_keys(a);
-        retry_send(a);
-        app_toast(a, 1, "Not quite: start sending again from the beginning");
+    if (fx & TRAIN_RESEND)
+        dec_clear(&a->txdec);
+    if (fx & TRAIN_PLAY) {
+        audio_stop_playback();
+        audio_play_text(a->tr.target, a->cfg.wpm, a->cfg.farnsworth, 350.0);
     }
 }
 
@@ -297,35 +50,17 @@ void train_leave(app_t *a)
 
 int train_wants_keying(const app_t *a)
 {
-    return a->cfg.train_dir == TRAIN_SEND && (a->tr.state == TS_SEND || a->tr.state == TS_SEND_RESULT);
+    return training_keying(&a->tr, &a->cfg);
 }
 
 void train_operator_pressed(app_t *a)
 {
-    /* Keep the target until Enter requests another item. */
-    if (a->tr.state == TS_SEND_RESULT)
-        retry_send(a);
+    train_do(a, training_pressed(&a->tr, &a->cfg));
 }
 
 void train_on_sent(app_t *a, const dec_token *tok)
 {
-    training_t *t = &a->tr;
-    size_t len = strlen(t->sent);
-    if (t->state != TS_SEND)
-        return;
-    if (tok->kind == TOK_SPACE) {
-        /* Long pauses do not finish an incomplete word. Strict mode keeps
-         * them so an inter-word gap inside the target fails the comparison. */
-        if (a->cfg.train_strict && len > 0 && t->sent[len - 1] != ' ' && len + 1 < sizeof t->sent) {
-            t->sent[len] = ' ';
-            t->sent[len + 1] = 0;
-        }
-        return;
-    }
-    if (len + strlen(tok->text) + 1 < sizeof t->sent)
-        strcat(t->sent, tok->text);
-    if (compare_send(a) != 0)
-        check_send(a);
+    train_do(a, training_sent(&a->tr, &a->cfg, tok, &a->txdec));
 }
 
 /* ------------------------------------------------------------------------ */
@@ -371,11 +106,7 @@ static void setup_change(app_t *a, int row, int delta)
 
 static void start_session(app_t *a)
 {
-    training_t *t = &a->tr;
-    t->total = t->correct = t->streak = t->best = 0;
-    t->nhist = 0;
-    t->last_pick = -1;
-    new_item(a);
+    train_do(a, training_start(&a->tr, &a->cfg));
     app_refresh_operator(a);
 }
 
@@ -416,11 +147,11 @@ static void render_setup(app_t *a, rect_t r)
             break;
         case ROW_CONTENT:
             label = "Material";
-            str_copy(val, sizeof val, CONTENT_NAMES[c->train_content]);
+            str_copy(val, sizeof val, TRAIN_CONTENT_NAMES[c->train_content]);
             break;
         case ROW_CHARSET:
             label = "Characters";
-            str_copy(val, sizeof val, CHARSET_NAMES[c->train_charset]);
+            str_copy(val, sizeof val, TRAIN_CHARSET_NAMES[c->train_charset]);
             break;
         case ROW_KOCH:
             label = "Koch lesson";
@@ -451,7 +182,7 @@ static void render_setup(app_t *a, rect_t r)
         if (row == ROW_KOCH) {
             /* The lesson's characters, the newest one highlighted. */
             int k, kx = fx + 40;
-            charset_string(c, set, sizeof set);
+            training_charset(c, set, sizeof set);
             for (k = 0; set[k] && kx < fx + fw - 1; k++, kx += 2)
                 scr_put(kx, y, (unsigned char)set[k], set[k + 1] ? TH_FG_MUTED : TH_ACCENT_HI, bg,
                         set[k + 1] ? 0 : A_BOLD);
@@ -557,8 +288,8 @@ static void centered(rect_t r, int y, const char *s, uint32_t col, int attr)
 static void render_stats(app_t *a, rect_t r)
 {
     training_t *t = &a->tr;
-    char buf[160];
-    int x = r.x, i, worst[5], nw = 0, c;
+    char buf[160], worst[5];
+    int x = r.x, i, nw;
 
     /* Recent results as dots, newest on the right. */
     x += scr_text(x, r.y, "RECENT", TH_FG_FAINT, COLOR_KEEP, 0) + 1;
@@ -571,24 +302,11 @@ static void render_stats(app_t *a, rect_t r)
         x += scr_text(x, r.y, buf, TH_FG_MUTED, COLOR_KEEP, 0) + 3;
     }
     /* The characters you miss most. */
-    for (c = 33; c < 127; c++) {
-        if (t->err[c] <= 0)
-            continue;
-        if (nw < 5) {
-            worst[nw++] = c;
-        } else {
-            int m = 0;
-            for (i = 1; i < 5; i++)
-                if (t->err[worst[i]] < t->err[worst[m]])
-                    m = i;
-            if (t->err[c] > t->err[worst[m]])
-                worst[m] = c;
-        }
-    }
+    nw = training_weak(t, worst, (int)sizeof worst);
     if (nw > 0 && x + 20 < r.x + r.w) {
         x += scr_text(x, r.y, "WEAK", TH_FG_FAINT, COLOR_KEEP, 0) + 1;
         for (i = 0; i < nw; i++) {
-            scr_put(x, r.y, (uint32_t)worst[i], TH_WARN, COLOR_KEEP, A_BOLD);
+            scr_put(x, r.y, (unsigned char)worst[i], TH_WARN, COLOR_KEEP, A_BOLD);
             x += 2;
         }
     }
@@ -685,8 +403,8 @@ void train_render(app_t *a, rect_t r)
                  a->cfg.train_koch);
     else
         snprintf(title, sizeof title, "Training  %s  %s", a->cfg.train_dir == TRAIN_COPY ? "copy" : "send",
-                 a->cfg.train_content == TRAIN_CHARS ? CHARSET_NAMES[a->cfg.train_charset]
-                                                     : CONTENT_NAMES[a->cfg.train_content]);
+                 a->cfg.train_content == TRAIN_CHARS ? TRAIN_CHARSET_NAMES[a->cfg.train_charset]
+                                                     : TRAIN_CONTENT_NAMES[a->cfg.train_content]);
     if (a->cfg.train_dir == TRAIN_SEND)
         snprintf(info, sizeof info, "%s  ·  score %d/%d", a->cfg.train_strict ? "strict" : "relaxed",
                  t->correct, t->total);
@@ -747,29 +465,19 @@ int train_key(app_t *a, const key_event *ev)
         }
         if (ev->mods & (MOD_CTRL | MOD_ALT))
             return 0;
-        /* The result stays up, for another listen with C-r, until Enter. */
-        if (t->state == TS_RESULT) {
-            if (ev->key == KEY_ENTER)
-                new_item(a);
-            return 1;
-        }
         if (ev->key == KEY_ENTER) {
-            check_copy(a);
+            train_do(a, training_enter(t, &a->cfg, &a->txdec));
             return 1;
         }
+        /* The result stays up, for another listen with C-r, until Enter. */
+        if (t->state == TS_RESULT)
+            return 1;
         if (ev->key == KEY_BACKSPACE) {
-            if (t->ntyped > 0)
-                t->typed[--t->ntyped] = 0;
+            training_backspace(t, &a->cfg);
             return 1;
         }
         if (ev->text >= 0x20 && ev->text < 0x7F && t->ntyped < (int)sizeof t->typed - 1) {
-            char ch = (char)ev->text;
-            if (ch >= 'a' && ch <= 'z')
-                ch = (char)(ch - 32);
-            t->typed[t->ntyped++] = ch;
-            t->typed[t->ntyped] = 0;
-            if (same_text(t->target, t->typed) || !copy_prefix_matches(t))
-                check_copy(a);
+            train_do(a, training_type(t, &a->cfg, (int)ev->text));
             return 1;
         }
         return 0;
@@ -784,13 +492,10 @@ int train_key(app_t *a, const key_event *ev)
         app_save_settings(a);
         return 1;
     case KEY_BACKSPACE:
-        retry_send(a);
+        train_do(a, training_backspace(t, &a->cfg));
         return 1;
     case KEY_ENTER:
-        if (t->state == TS_SEND_RESULT)
-            new_item(a);
-        else
-            check_send(a);
+        train_do(a, training_enter(t, &a->cfg, &a->txdec));
         return 1;
     default:
         return 0;

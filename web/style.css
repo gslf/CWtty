@@ -1,0 +1,545 @@
+/* style.css - The palette of src/theme.h: charcoal surfaces, a warm yellow
+ * accent. Desktop first; the last section turns it into a phone app. */
+
+:root {
+  color-scheme: dark;
+  --bg: #0b0c0e;
+  --surface: #111316;
+  --surface-2: #181b1f;
+  --surface-3: #22262c;
+  --line: #2a2f36;
+  --line-hi: #3d444d;
+  --fg: #e8e6e3;
+  --muted: #9aa1ab;
+  --faint: #5b626c;
+  --ghost: #343940;
+  --accent: #ffc61a;
+  --accent-hi: #ffe27a;
+  --accent-mid: #b88a00;
+  --accent-lo: #5c4500;
+  --accent-bg: #2a2208;
+  --on-accent: #15120a;
+  --ok: #8fd694;
+  --warn: #ffa94d;
+  --err: #ff6b5e;
+  --rx: #d9e2eb;
+  --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+  --tabs: 3.6rem; /* the phone tab bar */
+}
+
+* { box-sizing: border-box; }
+
+html, body { height: 100%; overscroll-behavior: none; }
+
+body {
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  height: 100dvh;
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font: 15px/1.4 var(--mono);
+  -webkit-text-size-adjust: 100%;
+  -webkit-tap-highlight-color: transparent;
+  overflow: hidden;
+}
+
+button, select, input { font: inherit; color: inherit; }
+button, select, label { touch-action: manipulation; }
+
+button, select {
+  background: var(--surface-3);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 0.25rem 0.6rem;
+  cursor: pointer;
+}
+
+select { max-width: 100%; }
+button:hover, select:hover { border-color: var(--line-hi); }
+button.primary { background: var(--accent); color: var(--on-accent); border-color: var(--accent); font-weight: bold; }
+button[aria-pressed="true"] { background: var(--accent-bg); color: var(--accent); border-color: var(--accent-mid); }
+:focus-visible { outline: 2px solid var(--accent-mid); outline-offset: 1px; }
+[hidden] { display: none !important; }
+
+input[type="range"] { accent-color: var(--accent); min-width: 0; }
+input[type="checkbox"] { accent-color: var(--accent); width: 1.1rem; height: 1.1rem; }
+
+kbd {
+  padding: 0 0.35rem;
+  border-radius: 4px;
+  background: var(--surface-3);
+  color: var(--accent);
+  font: inherit;
+  font-size: 0.85em;
+}
+
+.icon {
+  width: 1.4rem;
+  height: 1.4rem;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* ---- Header and footer ---- */
+
+header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0; /* a grid item: without it the header widens the page instead of fitting it */
+  padding: max(0.5rem, env(safe-area-inset-top)) max(1rem, env(safe-area-inset-right)) 0.5rem max(1rem, env(safe-area-inset-left));
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--line);
+}
+
+h1 {
+  margin: 0 0.75rem 0 0;
+  padding: 0 0.5rem;
+  border-radius: 4px;
+  background: var(--accent);
+  color: var(--on-accent);
+  font-size: 1rem;
+  font-weight: normal;
+}
+
+nav { display: flex; gap: 0.25rem; }
+nav button { border-color: transparent; background: none; color: var(--faint); font-weight: bold; }
+nav button[aria-current="true"] { background: var(--accent-bg); color: var(--accent); }
+nav .icon, nav .more { display: none; }
+
+/* When the header is short of room the settings summary gives way first. */
+#status { display: flex; gap: 1rem; min-width: 0; margin: 0 0 0 auto; color: var(--muted); font-size: 0.85rem; white-space: nowrap; }
+#speed { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+#out, #in { flex: none; }
+#out::after, #in::after { content: " ○"; color: var(--warn); }
+#out.on::after, #in.on::after { content: " ●"; color: var(--ok); }
+#in:not(.used) { display: none; }
+header > button .icon { display: none; }
+header [data-install] { border-color: var(--accent-mid); color: var(--accent); }
+header [data-install]::before { content: "↓ "; }
+
+footer {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  min-height: 2rem;
+  padding: 0.35rem max(1rem, env(safe-area-inset-right)) max(0.35rem, env(safe-area-inset-bottom));
+  color: var(--faint);
+  font-size: 0.8rem;
+}
+
+.hints { display: none; margin: 0; }
+.hints kbd { margin-left: 0.6rem; }
+.hints kbd:first-child { margin-left: 0; }
+#toast { margin-left: auto; color: var(--fg); transition: opacity 0.3s; }
+#toast::before { content: "● "; color: var(--accent); }
+#toast.warn { color: var(--warn); }
+#toast.warn::before { content: "▲ "; color: var(--warn); }
+#toast:empty { opacity: 0; }
+
+/* Touch screens have no keyboard to hint at. */
+@media (pointer: coarse) {
+  .hints, button kbd { display: none !important; }
+  footer { min-height: 0; }
+  select, input { font-size: max(16px, 1em); } /* iOS zooms into smaller fields */
+}
+
+/* ---- Panels, shown by view ---- */
+
+main {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  width: 100%;
+  max-width: 72rem;
+  min-height: 0;
+  margin: 0 auto;
+  padding: 0.75rem max(0.75rem, env(safe-area-inset-right)) 0 max(0.75rem, env(safe-area-inset-left));
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.panel {
+  display: none;
+  flex: 0 0 auto; /* only the log and the training grow, nothing shrinks */
+  flex-direction: column;
+  gap: 0.5rem;
+  min-width: 0;
+  min-height: 0;
+  padding: 0.6rem 0.9rem 0.8rem;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+.panel h2 {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  margin: 0;
+  font-size: 0.9rem;
+}
+
+.panel h2 small { margin-left: auto; color: var(--faint); font-weight: normal; }
+.panel h2 button { padding: 0 0.5rem; font-size: 0.8rem; }
+
+[data-view="tx"] :is(#log, #keying),
+[data-view="rx"] :is(#log, #signal),
+[data-view="trx"] :is(#log, #signal, #keying),
+[data-view^="train"] #train,
+[data-view="train-send"] #keying { display: flex; }
+
+[data-view="tx"] .hints[data-for="tx"], [data-view="rx"] .hints[data-for="rx"],
+[data-view="trx"] .hints[data-for="trx"], [data-view="train-setup"] .hints[data-for="train-setup"],
+[data-view="train-copy"] .hints[data-for="train-copy"], [data-view="train-send"] .hints[data-for="train-send"] {
+  display: block;
+}
+
+#log, #train { flex: 1 0 auto; }
+#log { min-height: 8rem; flex-basis: 0; }
+
+/* ---- Transcripts ---- */
+
+.text { display: none; flex: 1; min-height: 4rem; overflow-y: auto; font-size: 1.15rem; letter-spacing: 0.08em; }
+[data-view="tx"] #log-tx, [data-view="rx"] #log-rx, [data-view="trx"] #log-trx { display: block; }
+.text div { margin: 0 0 0.2rem; overflow-wrap: anywhere; }
+.text div[data-dir="rx"] { color: var(--rx); }
+.text div[data-dir="tx"] { color: var(--accent); }
+#log-trx div::before { display: inline-block; width: 2.5rem; color: var(--faint); font-size: 0.8rem; content: "RX"; }
+#log-trx div[data-dir="tx"]::before { content: "TX"; }
+.text div:last-child::after { content: "▁"; color: var(--accent); animation: blink 1.06s steps(1) infinite; }
+.prosign { text-decoration: overline; }
+.unknown { color: var(--faint); }
+
+@keyframes blink { 50% { opacity: 0; } }
+
+/* ---- Patterns: a dit is a dot, a dah a bar ---- */
+
+.pattern { display: flex; flex-wrap: wrap; justify-content: center; gap: 0.25rem 1.2rem; margin: 0; min-height: 0.6rem; }
+.pattern span { display: inline-flex; align-items: center; gap: 0.3rem; }
+.pattern i { display: block; width: 0.55rem; height: 0.55rem; border-radius: 0.3rem; background: currentColor; }
+.pattern i.dah { width: 1.65rem; }
+
+/* ---- Keying ---- */
+
+/* A canvas keeps the width it was drawn at: never let that size the layout. */
+canvas { display: block; min-width: 0; max-width: 100%; }
+#tape, .lanes canvas { width: 100%; height: 2.2rem; background: var(--bg); border-radius: 4px; }
+.live { display: flex; align-items: center; justify-content: center; gap: 1.5rem; min-height: 4.5rem; margin: 0; color: var(--accent); }
+.live .pattern { flex: 0 0 auto; }
+#glyph { font-size: 3.5rem; line-height: 1; }
+#name { color: var(--muted); }
+.live.old { color: var(--faint); }
+
+.keys { display: grid; grid-template-columns: 1fr 1.4fr 1fr; gap: 0.6rem; margin: 0; }
+.keys button {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.3rem;
+  padding: 0.9rem 0.5rem;
+  border-radius: 10px;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+}
+.keys button.on { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
+.keys button.on kbd { background: var(--accent-hi); color: var(--on-accent); }
+
+/* In the transceiver the signal panel has the TX tape: only the keys stay. */
+[data-view="trx"] #keying :is(h2, #tape, .live) { display: none; }
+[data-view="trx"] .keys button { flex-direction: row; padding: 0.6rem 0.5rem; }
+
+/* ---- Receiver ---- */
+
+#station { display: none; align-items: center; gap: 1rem; }
+[data-view="trx"] #station { display: flex; }
+#ptt { width: 3.5rem; padding: 0.1rem 0; border-radius: 6px; background: var(--surface-3); color: var(--faint); font-size: 1.4rem; text-align: center; }
+#ptt.rx { color: var(--rx); }
+#ptt.tx { background: var(--accent); color: var(--on-accent); }
+#breakin-label { color: var(--faint); font-size: 0.8rem; }
+.bar { flex: 1; max-width: 16rem; height: 0.4rem; border-radius: 0.2rem; background: var(--surface-3); overflow: hidden; }
+.bar i { display: block; width: 0; height: 100%; background: var(--accent); }
+#breakin-ms { color: var(--muted); font-size: 0.8rem; }
+
+#waterfall { position: relative; --wf: 7.5rem; }
+#wf { display: block; width: 100%; height: var(--wf); background: #0e0f11; border-radius: 4px; cursor: crosshair; touch-action: none; }
+#passband { position: absolute; top: 0; height: var(--wf); border-inline: 1px solid var(--accent-mid); background: #ffc61a14; pointer-events: none; }
+#passband::after { position: absolute; top: 0; bottom: 0; left: 50%; border-left: 1px dashed var(--accent-lo); content: ""; }
+.axis { display: flex; justify-content: space-between; margin: 0.15rem 0 0; color: var(--faint); font-size: 0.7rem; }
+
+.lanes { display: grid; grid-template-columns: 2.5rem minmax(0, 1fr); align-items: center; gap: 0.3rem 0.5rem; color: var(--faint); font-size: 0.75rem; }
+.lanes canvas { height: 1.3rem; }
+.trx { display: none; }
+[data-view="trx"] .trx { display: block; }
+
+.meter { position: relative; display: flex; align-items: center; height: 1.3rem; margin: 0; background: var(--bg); border-radius: 4px; }
+.meter i { width: calc(var(--level, 0) * 100%); max-width: 100%; height: 0.5rem; border-radius: 0 0.25rem 0.25rem 0; background: var(--accent-lo); }
+.meter i.open { background: var(--accent); }
+.meter b { position: absolute; left: calc(var(--threshold, 0) * 100%); width: 2px; height: 100%; background: var(--accent-hi); }
+.meter small { position: absolute; right: 0.5rem; color: var(--muted); }
+
+.controls { display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem 1.2rem; font-size: 0.85rem; color: var(--muted); }
+.controls label { display: flex; align-items: center; gap: 0.4rem; }
+.controls input[type="range"] { width: 7rem; }
+output { min-width: 3.5rem; color: var(--fg); }
+
+/* ---- Training ---- */
+
+#setup, #session { display: none; flex-direction: column; gap: 0.6rem; width: 100%; max-width: 40rem; margin: auto; }
+[data-view="train-setup"] #setup, [data-view^="train-"]:not([data-view="train-setup"]) #session { display: flex; }
+
+#setup label { display: grid; grid-template-columns: 9rem minmax(0, 1fr) auto; align-items: center; gap: 0.75rem; color: var(--muted); }
+#setup label > :is(select, input) { justify-self: start; }
+#setup input[type="range"] { width: 100%; }
+#setup .primary { align-self: center; margin: 0.5rem 0; padding: 0.5rem 1.5rem; }
+#setup .primary kbd { background: var(--on-accent); }
+.about { margin: 0; color: var(--faint); font-size: 0.85rem; }
+#setup-intro { color: var(--muted); font-style: italic; }
+.charset { margin: -0.3rem 0 0 9.75rem; letter-spacing: 0.4em; color: var(--muted); }
+.charset b { color: var(--accent-hi); }
+
+#session { align-items: center; text-align: center; }
+#session > p { margin: 0; }
+#prompt { color: var(--muted); }
+#prompt.ok { color: var(--ok); font-weight: bold; }
+#prompt.err { color: var(--err); font-weight: bold; }
+#big { min-height: 4.5rem; font-size: clamp(2.5rem, 9vw, 4.5rem); line-height: 1.1; letter-spacing: 0.12em; overflow-wrap: anywhere; }
+#big.ok { color: var(--ok); }
+#big.typed { color: var(--accent); }
+#session > #pattern { color: var(--accent-mid); }
+#pattern.faint { color: var(--faint); }
+#meaning { font-style: italic; }
+#answer {
+  width: min(100%, 22rem);
+  padding: 0.5rem;
+  background: var(--bg);
+  border: 1px solid var(--line-hi);
+  border-radius: 6px;
+  color: var(--accent);
+  font-size: 1.3rem;
+  text-align: center;
+  text-transform: uppercase;
+  letter-spacing: 0.15em;
+}
+#detail { color: var(--muted); }
+#live-sent { color: var(--accent); }
+.actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 0.5rem; }
+#stats { display: flex; flex-wrap: wrap; justify-content: center; gap: 0.3rem 1.5rem; color: var(--muted); font-size: 0.85rem; }
+#recent .ok { color: var(--ok); }
+#recent .err { color: var(--err); }
+#weak:not(:empty)::before { content: "WEAK "; color: var(--faint); }
+#weak { color: var(--warn); letter-spacing: 0.4em; }
+
+/* ---- Dialogs: the padding is inside, so a tap on the dialog itself is a tap outside ---- */
+
+dialog {
+  width: min(36rem, calc(100% - 1.5rem));
+  max-height: calc(100% - 3rem);
+  padding: 0;
+  background: var(--surface-2);
+  border: 1px solid var(--line-hi);
+  border-radius: 12px;
+  color: var(--fg);
+  box-shadow: 0 1rem 3rem #000a;
+}
+
+dialog > * { padding: 0.75rem 1rem 1rem; }
+dialog::backdrop { background: #0008; }
+dialog h2 { display: flex; justify-content: space-between; align-items: center; margin: 0 0 0.5rem; font-size: 1rem; }
+dialog h2 button { padding: 0 0.6rem; }
+dialog.floating { position: fixed; top: 3.5rem; width: fit-content; max-width: calc(100% - 1.5rem); opacity: 0.97; }
+
+#menu-dialog { width: min(18rem, calc(100% - 1.5rem)); }
+.menu { display: flex; flex-direction: column; gap: 0.25rem; }
+.menu button { display: flex; align-items: center; gap: 0.9rem; padding: 0.8rem 0.75rem; border: 0; background: none; text-align: left; }
+.menu button:hover { background: var(--surface-3); }
+.menu .icon { color: var(--accent); }
+
+fieldset { margin: 0 0 0.75rem; padding: 0; border: 0; }
+legend { margin-bottom: 0.4rem; color: var(--faint); font-size: 0.8rem; font-weight: bold; letter-spacing: 0.1em; text-transform: uppercase; }
+fieldset label { display: grid; grid-template-columns: 9rem minmax(0, 1fr) 6.5rem; align-items: center; gap: 0.75rem; padding: 0.15rem 0; color: var(--muted); }
+fieldset label > :is(select, input[type="checkbox"]) { justify-self: start; }
+fieldset output { color: var(--accent-hi); }
+
+dl { display: grid; grid-template-columns: 6rem 1fr; gap: 0.5rem 1rem; margin: 0 0 1rem; font-size: 0.9rem; }
+dt { color: var(--accent); font-weight: bold; }
+dd { margin: 0; color: var(--muted); }
+
+#table { display: flex; flex-wrap: wrap; gap: 1rem 2rem; }
+#table h3 { margin: 0 0 0.3rem; color: var(--faint); font-size: 0.75rem; letter-spacing: 0.1em; }
+/* Columns of 13, as in the terminal. */
+#table ul { display: grid; grid-auto-flow: column; grid-template-rows: repeat(13, auto); gap: 0.1rem 1rem; margin: 0; padding: 0; list-style: none; }
+#table li { display: flex; align-items: center; gap: 0.5rem; padding: 0.1rem 0.3rem; border-radius: 4px; }
+#table li b { min-width: 1.4rem; }
+#table li .pattern { justify-content: flex-start; color: var(--accent-mid); }
+#table li .pattern i { width: 0.35rem; height: 0.35rem; }
+#table li .pattern i.dah { width: 1.05rem; }
+#table li.lit { background: var(--accent-bg); color: var(--accent-hi); }
+#table li.lit .pattern { color: var(--accent); }
+
+/* Narrow windows, above the phone layout: Install, Table and Settings turn
+ * into icons so the header still fits on one line. */
+@media (max-width: 56rem) {
+  h1 { margin-right: 0.25rem; }
+  #status { gap: 0.75rem; }
+  header > button { padding: 0.25rem 0.45rem; }
+  header > button .icon { display: block; width: 1.1rem; height: 1.1rem; }
+  header > button span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+  header [data-install]::before { content: none; }
+}
+
+/* ======================================================================== */
+/* Phones, upright or on their side: a tab bar at the bottom, a compact top */
+/* bar, the menu, sheets that slide up and big paddles.                     */
+/* ======================================================================== */
+
+@media (max-width: 40rem), (pointer: coarse) and (max-height: 32rem) {
+  body { font-size: 14px; padding-bottom: calc(var(--tabs) + env(safe-area-inset-bottom)); }
+
+  header { gap: 0.75rem; padding-bottom: 0.4rem; }
+  header > button { display: none; }
+  h1 { margin: 0; }
+  #status { gap: 0.75rem; font-size: 0.75rem; }
+
+  nav {
+    position: fixed;
+    inset: auto 0 0;
+    z-index: 2;
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    gap: 0;
+    padding: 0 env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+    background: var(--surface-2);
+    border-top: 1px solid var(--line);
+  }
+  nav button {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 0.2rem;
+    height: var(--tabs);
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    font-size: 0.7rem;
+    font-weight: normal;
+  }
+  nav button[aria-current="true"] { background: none; color: var(--accent); font-weight: bold; }
+  nav .icon, nav .more { display: flex; }
+
+  /* The toast floats above the tab bar. */
+  footer {
+    position: fixed;
+    inset: auto 0 calc(var(--tabs) + env(safe-area-inset-bottom) + 0.75rem);
+    z-index: 3;
+    justify-content: center;
+    padding: 0 1rem;
+    pointer-events: none;
+  }
+  #toast { margin: 0; padding: 0.55rem 0.9rem; border-radius: 999px; background: var(--surface-3); box-shadow: 0 0.5rem 1.5rem #000c; }
+  #toast:empty { display: none; }
+
+  main { gap: 0.5rem; padding: 0.5rem max(0.5rem, env(safe-area-inset-right)) 0.5rem max(0.5rem, env(safe-area-inset-left)); }
+  .panel { gap: 0.4rem; padding: 0.5rem 0.75rem 0.65rem; border-radius: 8px; }
+  #log { min-height: 5rem; }
+  .text { font-size: 1.05rem; }
+
+  /* Keying: the two paddles side by side, the straight key below them. */
+  #keying h2 { display: none; }
+  #tape { height: 1.6rem; }
+  .live { min-height: 3rem; gap: 1rem; }
+  #glyph { font-size: 2.4rem; }
+  .keys { grid-template-columns: 1fr 1fr; grid-template-areas: "left right" "key key"; gap: 0.5rem; }
+  .keys [data-input="0"] { grid-area: left; }
+  .keys [data-input="1"] { grid-area: right; }
+  .keys [data-input="2"] { grid-area: key; min-height: 3.5rem; }
+  .keys button { min-height: 7rem; font-size: 1.1rem; font-weight: bold; letter-spacing: 0.1em; text-transform: uppercase; }
+  [data-view="trx"] .keys button { min-height: 4.5rem; }
+  [data-view="trx"] .keys [data-input="2"] { min-height: 3rem; }
+
+  /* Receiver: rows of controls, sliders across the whole width. */
+  #waterfall { --wf: 6rem; }
+  [data-view="trx"] #waterfall { --wf: 4.5rem; }
+  .lanes { grid-template-columns: 2rem minmax(0, 1fr); gap: 0.25rem 0.4rem; }
+  .lanes canvas, .meter { height: 1.1rem; }
+  .controls { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.5rem 0.75rem; }
+  .controls label:has(input[type="range"]) { display: grid; grid-template-columns: 6.5rem minmax(0, 1fr) 3.5rem; grid-column: 1 / -1; }
+  .controls input[type="range"] { width: 100%; }
+  .controls output { min-width: 0; text-align: right; }
+  .controls button { padding: 0.5rem; }
+  /* The transceiver needs room for the keys: no lanes, the essential controls. */
+  [data-view="trx"] .axis, [data-view="trx"] .lanes, [data-view="trx"] .controls .rx-only { display: none; }
+  #station { gap: 0.75rem; }
+
+  /* Training. */
+  #setup label { grid-template-columns: minmax(0, 1fr) auto; gap: 0.3rem 0.75rem; }
+  #setup label > :is(select, input[type="checkbox"]) { justify-self: end; }
+  #setup label > input[type="range"] { grid-column: 1 / -1; grid-row: 2; }
+  #setup label > output { grid-column: 2; grid-row: 1; text-align: right; }
+  .charset { margin: 0; }
+  #setup .primary { width: 100%; padding: 0.8rem; }
+  #big { min-height: 3.5rem; }
+  .actions { width: 100%; }
+  .actions button { flex: 1; padding: 0.7rem 0.5rem; }
+
+  /* Sheets slide up from the bottom; the table drops from the top and
+   * leaves the keys free. */
+  dialog {
+    width: 100%;
+    max-width: none;
+    max-height: calc(100% - 2rem);
+    margin: auto 0 0;
+    border-width: 1px 0 0;
+    border-radius: 16px 16px 0 0;
+  }
+  dialog > * { padding-bottom: max(1rem, env(safe-area-inset-bottom)); }
+  dialog h2 { position: sticky; top: -0.75rem; z-index: 1; margin: -0.75rem -1rem 0.5rem; padding: 0.75rem 1rem 0.5rem; background: var(--surface-2); }
+  dialog h2 button { padding: 0.3rem 0.8rem; }
+  #menu-dialog { width: 100%; }
+  dialog.floating {
+    inset: 0 0 auto;
+    width: 100%;
+    max-width: none;
+    max-height: 55dvh;
+    margin: 0;
+    border-width: 0 0 1px;
+    border-radius: 0 0 16px 16px;
+    overflow-y: auto;
+  }
+  dialog.floating > * { padding-top: max(0.75rem, env(safe-area-inset-top)); }
+  #table { gap: 0.75rem 1.5rem; }
+
+  fieldset label { grid-template-columns: minmax(0, 1fr) auto; gap: 0.2rem 0.75rem; padding: 0.35rem 0; }
+  fieldset label > :is(select, input[type="checkbox"]) { justify-self: end; }
+  fieldset label > input[type="range"] { grid-column: 1 / -1; grid-row: 2; width: 100%; }
+  fieldset label > output { grid-column: 2; grid-row: 1; text-align: right; }
+  dialog .actions button { padding: 0.7rem; }
+  dl { grid-template-columns: 4.5rem 1fr; }
+}
+
+/* On its side a phone has little height and plenty of width: the log and
+ * the signal side by side, one row of keys across the bottom (dit under the
+ * left thumb, dah under the right one), a slimmer tab bar. */
+@media (pointer: coarse) and (max-height: 32rem) {
+  :root { --tabs: 2.75rem; }
+  nav button { flex-direction: row; gap: 0.4rem; }
+  main { display: grid; grid-template: minmax(0, 1fr) auto / repeat(2, minmax(0, 1fr)); }
+  #log, #train { grid-area: 1 / 1 / 2 / 3; min-height: 0; }
+  [data-view="rx"] #log, [data-view="trx"] #log { grid-column: 1; }
+  #signal { grid-area: 1 / 2 / 2 / 3; overflow-y: auto; }
+  #keying { grid-area: 2 / 1 / 3 / 3; }
+  .live { display: none; }
+  .keys { grid-template-columns: 1fr 1.2fr 1fr; grid-template-areas: "left key right"; }
+  [data-view] .keys button, [data-view] .keys [data-input="2"] { min-height: 3.5rem; }
+  #waterfall, [data-view="trx"] #waterfall { --wf: 4rem; }
+  [data-view="trx"] .axis { display: flex; }
+  [data-view="trx"] .lanes { display: grid; }
+}

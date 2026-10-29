@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <!-- "CQ" in Morse: dah dit dah dit, dah dah dit dah. Centred in the maskable safe zone. -->
+  <rect width="512" height="512" fill="#0b0c0e"/>
+  <g fill="#ffc61a">
+    <rect x="106" y="196" width="84" height="36" rx="18"/>
+    <rect x="210" y="196" width="36" height="36" rx="18"/>
+    <rect x="266" y="196" width="84" height="36" rx="18"/>
+    <rect x="370" y="196" width="36" height="36" rx="18"/>
+    <rect x="82" y="280" width="84" height="36" rx="18"/>
+    <rect x="186" y="280" width="84" height="36" rx="18"/>
+    <rect x="290" y="280" width="36" height="36" rx="18"/>
+    <rect x="346" y="280" width="84" height="36" rx="18"/>
+  </g>
+</svg>
