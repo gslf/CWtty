@@ -21,18 +21,18 @@ jobs:
   build:
     name: ${{ matrix.asset }}
     runs-on: ${{ matrix.os }}
-    # Linux binaries are built on Debian 11 (glibc 2.31) so that they also run
-    # on older distributions.
+    # Linux binaries are built on AlmaLinux 8 (glibc 2.28) so that they also
+    # run on older distributions (Debian 10, Ubuntu 20.04, RHEL 8 and later).
     container: ${{ matrix.container }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - os: ubuntu-24.04
-            container: debian:bullseye
+            container: almalinux:8
             asset: cwtty-linux-x86_64.tar.gz
           - os: ubuntu-24.04-arm
-            container: debian:bullseye
+            container: almalinux:8
             asset: cwtty-linux-aarch64.tar.gz
           - os: macos-15
             asset: cwtty-macos-universal.tar.gz
@@ -49,7 +49,7 @@ jobs:
 
       - name: Install the toolchain
         if: matrix.container
-        run: apt-get update && apt-get install -y --no-install-recommends build-essential cmake
+        run: dnf install -y gcc make cmake tar gzip
 
       - name: Check the tag against the project version
         if: startsWith(github.ref, 'refs/tags/')
