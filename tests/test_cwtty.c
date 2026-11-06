@@ -417,6 +417,10 @@ static void test_settings(void)
     CHECK(s.key_input == INPUT_KEYBOARD, "the keyboard should be the default input");
     CHECK(settings_load(&s, path) == 0 && s.train_strict == 1, "strict training setting not persisted");
     CHECK(s.key_input == INPUT_PAD && s.keyer_mode == KEYER_STRAIGHT, "USB pad settings not persisted");
+    s.key_input = INPUT_USB_KEY;
+    CHECK(settings_save(&s, path) == 0, "could not save the USB straight key setting");
+    settings_defaults(&s);
+    CHECK(settings_load(&s, path) == 0 && s.key_input == INPUT_USB_KEY, "USB straight key setting not persisted");
     s.key_input = 7;
     settings_clamp(&s);
     CHECK(s.key_input == INPUT_COUNT - 1, "key input out of range: %d", s.key_input);
@@ -460,6 +464,41 @@ static void test_pad_keying(void)
     a.key_right = 1;
     app_handle_key(&a, &right_up);
     CHECK(!a.key_right, "a pad release was lost after switching to the keyboard");
+    audio_release_keys();
+}
+
+static void test_usb_key_keying(void)
+{
+    static app_t a;
+    key_event space = {KEY_SPACE, 0, EV_PRESS, ' '}, space_up = {KEY_SPACE, 0, EV_RELEASE, 0};
+    key_event left = {KEY_MOUSE_LEFT, 0, EV_PRESS, 0}, left_up = {KEY_MOUSE_LEFT, 0, EV_RELEASE, 0};
+    key_event right = {KEY_MOUSE_RIGHT, 0, EV_PRESS, 0}, right_up = {KEY_MOUSE_RIGHT, 0, EV_RELEASE, 0};
+    printf("keying: USB straight key\n");
+    memset(&a, 0, sizeof a);
+    settings_defaults(&a.cfg);
+    a.mode = MODE_TX;
+    a.kbd = input_info();
+    a.cfg.key_input = INPUT_USB_KEY;
+    audio_release_keys();
+
+    app_handle_key(&a, &space);
+    CHECK(!a.key_space && !audio_operator_busy(), "Space keyed while the USB key is selected");
+    /* The buttons key the straight key, never the paddles of the keyer. */
+    app_handle_key(&a, &left);
+    CHECK(a.key_usb && !a.key_left && audio_operator_busy(), "the USB key did not key");
+    app_handle_key(&a, &space_up);
+    CHECK(audio_operator_busy(), "releasing Space cut the USB key");
+    /* Either button keys: the key stays down while one is held. */
+    app_handle_key(&a, &right);
+    app_handle_key(&a, &left_up);
+    CHECK(a.key_usb && !a.key_right && audio_operator_busy(), "the key went up with a button still held");
+    app_handle_key(&a, &right_up);
+    CHECK(!a.key_usb && !audio_operator_busy(), "the USB key stayed down");
+    /* Releases always count, whatever device is selected. */
+    app_handle_key(&a, &left);
+    a.cfg.key_input = INPUT_KEYBOARD;
+    app_handle_key(&a, &left_up);
+    CHECK(!a.key_usb && !audio_operator_busy(), "a USB key release was lost after switching to the keyboard");
     audio_release_keys();
 }
 
@@ -1098,6 +1137,7 @@ int main(void)
     test_transcript();
     test_settings();
     test_pad_keying();
+    test_usb_key_keying();
     test_send_training();
     test_send_training_characters();
     test_training_menu();

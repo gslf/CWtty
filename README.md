@@ -33,12 +33,12 @@ curl -fsSL https://raw.githubusercontent.com/gslf/CWtty/main/install.sh | sh -s 
 
 ## Features
 
-- **Transmit** – Space is a straight key, the left and right arrows are the dit and dah paddles of an electronic keyer (Iambic A, Iambic B, Ultimatic, Bug and Straight key are supported). A USB paddle that acts as mouse buttons can replace the keyboard. The sidetone is click-free (raised cosine envelope) and the keyer runs inside the audio callback, so element and space lengths are sample-accurate.
+- **Transmit** – Space is a straight key, the left and right arrows are the dit and dah paddles of an electronic keyer (Iambic A, Iambic B, Ultimatic, Bug and Straight key are supported). A USB paddle or straight key adapter that acts as mouse buttons can replace the keyboard. The sidetone is click-free (raised cosine envelope) and the keyer runs inside the audio callback, so element and space lengths are sample-accurate.
 - **Receive** – Decodes CW from the microphone. Sensitivity, pitch, filter width, AFC and speed lock can be changed live. A waterfall, an envelope trace, the decoded key tape and a level meter show what the decoder sees.
 - **TX/RX (transceiver)** – Receives by default, touch the key and it switches to transmit, muting the receiver, then returns to receive afterthe break-in delay. 
 - **Training** – Learn to copy (CWtty sends, you type) or to send (CWtty shows, you key).
 - **Morse table** – A floating reference table.
-- **Settings** – Tone, speed, Farnsworth, keyboard or USB pad, paddle mode, volume, envelope, receiver defaults, break-in delay, audio devices and buffer size. Saved automatically.
+- **Settings** – Tone, speed, Farnsworth, keyboard, USB pad or USB straight key, paddle mode, volume, envelope, receiver defaults, break-in delay, audio devices and buffer size. Saved automatically.
 
 
 

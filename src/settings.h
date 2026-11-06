@@ -6,15 +6,16 @@
 
 #define SETTINGS_NAME_CAP 128
 
-/* What the operator keys with. */
-enum { INPUT_KEYBOARD, INPUT_PAD, INPUT_COUNT };
+/* What the operator keys with: the keyboard, or a USB adapter that shows a
+ * paddle (INPUT_PAD) or a straight key (INPUT_USB_KEY) as mouse buttons. */
+enum { INPUT_KEYBOARD, INPUT_PAD, INPUT_USB_KEY, INPUT_COUNT };
 
 typedef struct {
     /* Keyer and sidetone */
     int tone_hz;      /* 300..1200 */
     int wpm;          /* character speed, 5..60 */
     int farnsworth;   /* effective speed for playback (0 = off) */
-    int key_input;    /* INPUT_*: keyboard, or a USB pad on the mouse buttons */
+    int key_input;    /* INPUT_*: keyboard, or a USB pad or key on the mouse buttons */
     int keyer_mode;   /* keyer_mode */
     int swap_paddles; /* left arrow = dah */
     int volume;       /* 0..100 */

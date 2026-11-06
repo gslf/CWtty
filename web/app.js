@@ -661,15 +661,18 @@ addEventListener('keyup', (e) => {
 addEventListener('blur', releaseAll);
 document.addEventListener('visibilitychange', releaseAll);
 
-// A USB pad seen as mouse buttons: left is the left paddle, right the right one.
-const pad = (e) => get('key_input') === 1 && (e.button === 0 || e.button === 2);
+// A USB pad or straight key seen as mouse buttons. On the pad left is the left
+// paddle, right the right one; either button is the straight key, down while
+// one of them is held.
+const usb = (e) => get('key_input') > 0 && (e.button === 0 || e.button === 2);
+const usbInput = (e) => (get('key_input') === 2 ? 2 : e.button ? 1 : 0);
 addEventListener('mousedown', (e) => {
-  if (!pad(e) || e.target.closest('button, select, input, label, dialog, header')) return;
+  if (!usb(e) || e.target.closest('button, select, input, label, dialog, header')) return;
   e.preventDefault();
-  press(e.button ? 1 : 0, true);
+  press(usbInput(e), true);
 });
-addEventListener('mouseup', (e) => pad(e) && press(e.button ? 1 : 0, false));
-addEventListener('contextmenu', (e) => get('key_input') === 1 && e.preventDefault());
+addEventListener('mouseup', (e) => usb(e) && !(get('key_input') === 2 && e.buttons & 3) && press(usbInput(e), false));
+addEventListener('contextmenu', (e) => get('key_input') > 0 && e.preventDefault());
 
 // The on-screen keys, for touch screens and mice.
 for (const key of $$('.keys button')) {

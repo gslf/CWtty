@@ -56,11 +56,11 @@ void app_apply_settings(app_t *a)
     p.rise_ms = c->rise_ms;
     audio_set_params(&p);
     input_set_legacy_dit_ms(1200.0 / c->wpm);
-    /* Mouse reporting only with the pad: it takes the mouse away from the
-     * terminal (text selection needs Shift then). */
+    /* Mouse reporting only with the USB pad or key: it takes the mouse away
+     * from the terminal (text selection needs Shift then). */
     if (!applied_valid || applied.key_input != c->key_input) {
         app_release_keys(a);
-        input_set_mouse(c->key_input == INPUT_PAD);
+        input_set_mouse(c->key_input != INPUT_KEYBOARD);
     }
 
     if (!applied_valid || applied.wpm != c->wpm)
@@ -196,7 +196,7 @@ int app_keying_allowed(const app_t *a)
 
 void app_release_keys(app_t *a)
 {
-    a->key_left = a->key_right = a->key_space = 0;
+    a->key_left = a->key_right = a->key_space = a->key_usb = 0;
     audio_release_keys();
 }
 
@@ -204,7 +204,7 @@ void app_refresh_operator(app_t *a)
 {
     int allowed = app_keying_allowed(a);
     if (!allowed)
-        a->key_left = a->key_right = a->key_space = 0;
+        a->key_left = a->key_right = a->key_space = a->key_usb = 0;
     audio_enable_operator(allowed);
 }
 
@@ -225,7 +225,7 @@ static int is_keying_key(const key_event *ev)
 /* The keys of the input device chosen in the settings. */
 static int is_active_keying_key(const app_t *a, const key_event *ev)
 {
-    if (a->cfg.key_input == INPUT_PAD)
+    if (a->cfg.key_input != INPUT_KEYBOARD)
         return ev->key == KEY_MOUSE_LEFT || ev->key == KEY_MOUSE_RIGHT;
     return ev->key == KEY_SPACE || ev->key == KEY_LEFT || ev->key == KEY_RIGHT;
 }
@@ -239,11 +239,28 @@ static void paddle(app_t *a, int left, int down)
         audio_key_dah(down);
 }
 
+/* The bit of a mouse button in key_usb, 0 for other keys. */
+static int usb_bit(int key)
+{
+    return key == KEY_MOUSE_LEFT ? 1 : (key == KEY_MOUSE_RIGHT ? 2 : 0);
+}
+
+/* The straight key sounds while Space or a button of the USB key is held. */
+static void straight(app_t *a)
+{
+    audio_key_straight(a->key_space || a->key_usb);
+}
+
 static void keying_press(app_t *a, int key)
 {
     if (key == KEY_SPACE) {
         a->key_space = 1;
-        audio_key_straight(1);
+        straight(a);
+    } else if (usb_bit(key) && a->cfg.key_input == INPUT_USB_KEY) {
+        /* Either button: depending on the plug, the key closes the tip or
+         * the ring contact of the adapter. */
+        a->key_usb |= usb_bit(key);
+        straight(a);
     } else if (key == KEY_LEFT || key == KEY_MOUSE_LEFT) {
         a->key_left = 1;
         paddle(a, 1, 1);
@@ -261,7 +278,10 @@ static void keying_release(app_t *a, int key)
 {
     if (key == KEY_SPACE) {
         a->key_space = 0;
-        audio_key_straight(0);
+        straight(a);
+    } else if (a->key_usb & usb_bit(key)) {
+        a->key_usb &= ~usb_bit(key);
+        straight(a);
     } else if (key == KEY_LEFT || key == KEY_MOUSE_LEFT) {
         a->key_left = 0;
         paddle(a, 1, 0);
@@ -652,9 +672,9 @@ static void render_header(app_t *a)
     scr_put(rx + 4, 0, a->audio.out_ok ? 0x25CF : 0x25CB, ocol, TH_SURFACE_2, 0);
     rx -= 2;
 
-    if (a->cfg.key_input == INPUT_PAD) {
+    if (a->cfg.key_input != INPUT_KEYBOARD) {
         /* Mouse buttons always come with exact releases. */
-        kname = "KEYS usb pad";
+        kname = a->cfg.key_input == INPUT_PAD ? "KEYS usb pad" : "KEYS usb key";
         kcol = TH_FG_FAINT;
     } else if (a->kbd->proto == KBD_LEGACY || !a->kbd->release_text) {
         legacy = a->kbd->proto == KBD_LEGACY;
@@ -671,8 +691,9 @@ static void render_header(app_t *a)
         rx -= 3;
     }
 
+    /* The USB straight key never goes through the keyer. */
     snprintf(buf, sizeof buf, "%d WPM  %d Hz  %s", a->cfg.wpm, a->cfg.tone_hz,
-             keyer_mode_name(a->cfg.keyer_mode));
+             keyer_mode_name(a->cfg.key_input == INPUT_USB_KEY ? KEYER_STRAIGHT : a->cfg.keyer_mode));
     rx -= utf8_width(buf);
     if (rx > x + 2)
         scr_text(rx, 0, buf, TH_FG_MUTED, TH_SURFACE_2, 0);
@@ -685,7 +706,8 @@ typedef struct {
 
 static int mode_hints(app_t *a, hint_t *h, int cap)
 {
-    int n = 0, pad = a->cfg.key_input == INPUT_PAD;
+    int n = 0, pad = a->cfg.key_input == INPUT_PAD, usb = a->cfg.key_input == INPUT_USB_KEY;
+    const char *keys = pad ? "USB pad" : (usb ? "USB key" : "Space ← →");
 #define H(k, l)                                                                          \
     do {                                                                                 \
         if (n < cap) {                                                                   \
@@ -722,6 +744,8 @@ static int mode_hints(app_t *a, hint_t *h, int cap)
     case MODE_TX:
         if (pad) {
             H("USB pad", "Paddles");
+        } else if (usb) {
+            H("USB key", "Straight key");
         } else {
             H("Space", "Straight key");
             H("← →", "Paddles");
@@ -739,7 +763,7 @@ static int mode_hints(app_t *a, hint_t *h, int cap)
         H("C-l", "Clear");
         break;
     case MODE_TRX:
-        H(pad ? "USB pad" : "Space ← →", "Transmit");
+        H(keys, "Transmit");
         H("+ -", "Sensitivity");
         H("< >", "Tune");
         H("z", "Zero-beat");
@@ -757,7 +781,7 @@ static int mode_hints(app_t *a, hint_t *h, int cap)
             if (!app_has_modal(a, MODAL_TABLE))
                 H("Esc", "Setup");
         } else {
-            H(pad ? "USB pad" : "Space ← →", "Send");
+            H(keys, "Send");
             H("Enter", a->tr.state == TS_SEND_RESULT ? "Next" : "Check / skip");
             H("Tab", "Hint");
             H("Bksp", "Retry");

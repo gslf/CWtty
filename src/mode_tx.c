@@ -31,10 +31,13 @@ void keying_panel(app_t *a, rect_t r)
     int tone = tl_state(&a->tx_tl);
     rect_t in;
     uint32_t gcol = TH_FG, pcol = TH_ACCENT;
-    int rows, y;
+    int rows, y, usb = a->cfg.key_input == INPUT_USB_KEY;
 
-    snprintf(info, sizeof info, "%d WPM  %s%s", a->cfg.wpm, keyer_mode_name(a->cfg.keyer_mode),
-             a->cfg.swap_paddles ? "  swapped" : "");
+    if (usb)
+        snprintf(info, sizeof info, "%d WPM  %s", a->cfg.wpm, keyer_mode_name(KEYER_STRAIGHT));
+    else
+        snprintf(info, sizeof info, "%d WPM  %s%s", a->cfg.wpm, keyer_mode_name(a->cfg.keyer_mode),
+                 a->cfg.swap_paddles ? "  swapped" : "");
     ui_panel(r, "Keying", info, tone);
     in = rect_make(r.x + 2, r.y + 1, r.w - 4, r.h - 2);
     if (in.w < 20 || in.h < 1)
@@ -85,17 +88,23 @@ void keying_panel(app_t *a, rect_t r)
         }
     }
 
-    /* Keycaps, lit while pressed. The pad has no straight key. */
+    /* Keycaps, lit while pressed. The pad has no straight key, the USB key
+     * no paddles. */
     if (in.w >= 21 + 24 + 36 && in.h >= rows + 4) {
         int kx = in.x + in.w - 35, ky = y;
         const char *left = a->cfg.swap_paddles ? "◂ DAH" : "◂ DIT";
         const char *right = a->cfg.swap_paddles ? "DIT ▸" : "DAH ▸";
-        ui_keycap(rect_make(kx, ky, 10, 3), left, a->key_left);
-        if (a->cfg.key_input == INPUT_PAD)
-            scr_text(kx + 14, ky + 1, "USB PAD", TH_FG_FAINT, COLOR_KEEP, A_BOLD);
-        else
-            ui_keycap(rect_make(kx + 11, ky, 13, 3), "STRAIGHT", a->key_space);
-        ui_keycap(rect_make(kx + 25, ky, 10, 3), right, a->key_right);
+        if (usb) {
+            scr_text(kx + 2, ky + 1, "USB KEY", TH_FG_FAINT, COLOR_KEEP, A_BOLD);
+            ui_keycap(rect_make(kx + 11, ky, 13, 3), "STRAIGHT", a->key_usb != 0);
+        } else {
+            ui_keycap(rect_make(kx, ky, 10, 3), left, a->key_left);
+            if (a->cfg.key_input == INPUT_PAD)
+                scr_text(kx + 14, ky + 1, "USB PAD", TH_FG_FAINT, COLOR_KEEP, A_BOLD);
+            else
+                ui_keycap(rect_make(kx + 11, ky, 13, 3), "STRAIGHT", a->key_space);
+            ui_keycap(rect_make(kx + 25, ky, 10, 3), right, a->key_right);
+        }
         scr_put(kx - 3, ky + 1, tone ? 0x25CF : 0x25CB, tone ? TH_ACCENT : TH_FG_GHOST, COLOR_KEEP, 0);
     }
 }
@@ -119,7 +128,12 @@ void tx_render(app_t *a, rect_t r)
         static const char *const pad[] = {"The levers of the USB pad are the paddles of the keyer.",
                                           "Keep the mouse pointer over this window.",
                                           "What you send is decoded here."};
-        const char *const *lines = a->cfg.key_input == INPUT_PAD ? pad : keys;
+        static const char *const usb[] = {"The USB key is a straight key: the tone lasts as long as you hold it.",
+                                          "Keep the mouse pointer over this window.",
+                                          "What you send is decoded here."};
+        const char *const *lines = a->cfg.key_input == INPUT_PAD     ? pad
+                                   : a->cfg.key_input == INPUT_USB_KEY ? usb
+                                                                       : keys;
         int i, y = text.y + text.h / 2 - 2;
         for (i = 0; i < 3; i++)
             if (utf8_width(lines[i]) < text.w - 4)

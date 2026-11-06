@@ -262,7 +262,7 @@ typedef struct {
 } field;
 
 static const char *const KEYER_NAMES[] = {"Iambic A", "Iambic B", "Ultimatic", "Bug", "Straight key"};
-static const char *const INPUT_NAMES[] = {"Keyboard", "USB pad (mouse)"};
+static const char *const INPUT_NAMES[] = {"Keyboard", "USB pad (mouse)", "USB straight key"};
 
 static int build_fields(app_t *a, field *f)
 {
@@ -487,6 +487,9 @@ static const char *const HELP[] = {
     "← →\tPaddles: dit and dah (swap them in Settings)",
     "USB pad\tA paddle seen as mouse buttons: set Key with",
     "\tto USB pad in Settings. Left is dit, right dah;",
+    "\tkeep the mouse pointer over this window.",
+    "USB key\tA straight key seen as a mouse button: set",
+    "\tKey with to USB straight key in Settings;",
     "\tkeep the mouse pointer over this window.",
     "Modes\tIambic A, Iambic B, Ultimatic, Bug and",
     "\tStraight key (both paddles key by hand)",

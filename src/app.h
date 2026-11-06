@@ -56,6 +56,7 @@ typedef struct app {
     /* Keyboard. */
     const kbd_info *kbd;
     int             key_left, key_right, key_space; /* physical state */
+    int             key_usb; /* USB straight key: mouse buttons held (bit 0 left, bit 1 right) */
 
     audio_status audio;
     double       audio_status_at;
