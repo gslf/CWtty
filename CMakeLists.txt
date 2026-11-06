@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.16)
 
 project(cwtty
-    VERSION 1.0.0
+    VERSION 1.1.0
     DESCRIPTION "A terminal user interface for CW (Morse) telegraphy"
     LANGUAGES C)
 
