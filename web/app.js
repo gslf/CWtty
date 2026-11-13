@@ -136,7 +136,8 @@ function refresh(key) {
 
 function changed() {
   refresh();
-  $('#speed').textContent = `${get('wpm')} WPM  ${get('tone_hz')} Hz  ${NAMES.keyer[get('keyer_mode')][1]}`;
+  $('#speed').replaceChildren(make('span', '', `${get('wpm')} WPM`), make('span', '', `${get('tone_hz')} Hz`),
+                              make('span', 'keyer', NAMES.keyer[get('keyer_mode')][1]));
   const swap = get('swap_paddles');
   $('[data-input="0"] span').textContent = swap ? 'Dah' : 'Dit';
   $('[data-input="1"] span').textContent = swap ? 'Dit' : 'Dah';
@@ -174,6 +175,11 @@ function today() {
 
 const dateOf = (day) =>
   day > 0 ? new Date(day * 86400000).toLocaleDateString('en-GB', { timeZone: 'UTC', day: 'numeric', month: 'short', year: 'numeric' }) : '';
+
+// A recent date without its year: "13 Nov".
+const shortDate = (day) =>
+  day > 0 ? new Date(day * 86400000).toLocaleDateString('en-GB', { timeZone: 'UTC', day: 'numeric', month: 'short',
+    ...(today() - day > 300 ? { year: 'numeric' } : {}) }) : '';
 
 const stat = (key) => w.cw_stat(cstr(key));
 
@@ -703,8 +709,7 @@ function typedView(big, typed) {
 function renderSetup(send, content, koch) {
   const when = { chars: content === 0, koch, send: !!send, copy: !send };
   for (const row of $$('#setup [data-when]')) row.hidden = !when[row.dataset.when];
-  setText($('#setup-intro'), send ? 'Send: CWtty shows the text, you key it with Space, the paddles or the buttons.'
-                                  : 'Copy by ear: CWtty sends, you type what you hear.');
+  setText($('#setup-intro'), send ? 'Send: CWtty shows the text, you key it.' : 'Copy by ear: CWtty sends, you type what you hear.');
   if (koch) {
     const chars = $('#koch-chars'), set = str(w.cw_train_charset());
     if (chars.dataset.text !== set) {
@@ -797,14 +802,15 @@ function renderStats() {
 
   // Records: four copy levels and send.
   const level = get('train_level');
-  const tile = (title, prefix, current) => {
+  const tile = (dir, title, prefix, current) => {
     const value = stat(prefix);
-    const detail = value ? [`${stat(`${prefix}_wpm`)} WPM`, dateOf(stat(`${prefix}_day`))].filter(Boolean).join('  ·  ') : 'not yet';
-    return make('div', `record${current ? ' current' : ''}${value ? '' : ' none'}`, make('small', '', title), make('b', '', value || '–'), make('span', '', detail));
+    const detail = value ? [`${stat(`${prefix}_wpm`)} WPM`, shortDate(stat(`${prefix}_day`))].filter(Boolean).join(' · ') : 'not yet';
+    return make('div', `record${current ? ' current' : ''}${value ? '' : ' none'}`,
+                make('small', '', make('span', 'dir', dir), title), make('b', '', value || '–'), make('span', '', detail));
   };
   $('#records').replaceChildren(
-    ...[1, 2, 3, 4].map((l) => tile(`Receive · level ${l}`, `copy_record_${l}`, l === level)),
-    tile('Send', 'send_record', false));
+    ...[1, 2, 3, 4].map((l) => tile('Receive · ', `Level ${l}`, `copy_record_${l}`, l === level)),
+    tile('', 'Send', 'send_record', false));
   [...$('#records').children].forEach((card, i) => card.style.setProperty('--i', i));
 
   // Practice: days and the last four weeks.
