@@ -65,6 +65,7 @@ add_library(cwtty_core STATIC
     src/decoder.c
     src/demo.c
     src/settings.c
+    src/stats.c
     src/transcript.c
     src/training.c
     src/app.c
@@ -73,6 +74,7 @@ add_library(cwtty_core STATIC
     src/mode_rx.c
     src/mode_trx.c
     src/mode_train.c
+    src/mode_stats.c
     src/modals.c)
 target_include_directories(cwtty_core PUBLIC src)
 target_compile_definitions(cwtty_core PUBLIC CWTTY_VERSION="${PROJECT_VERSION}")

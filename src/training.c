@@ -81,12 +81,29 @@ static char pick_char(const training_t *t, const char *set, int koch)
     return set[n - 1];
 }
 
+int training_max_listens(const settings_t *c)
+{
+    return 5 - clampi(c->train_level, 1, STATS_LEVELS);
+}
+
+void training_clock(training_t *t, double now_ms, int today)
+{
+    t->now = now_ms;
+    t->today = today;
+}
+
+int training_record(const training_t *t, const settings_t *c)
+{
+    return t->stats ? stats_record_of(t->stats, c->train_dir, c->train_level)->value : 0;
+}
+
 int training_retry(training_t *t, const settings_t *c)
 {
     if (c->train_dir == TRAIN_COPY) {
         t->typed[0] = 0;
         t->ntyped = 0;
         t->state = TS_LISTEN;
+        t->listens++;
         return TRAIN_PLAY;
     }
     t->sent[0] = 0;
@@ -126,6 +143,8 @@ int training_next(training_t *t, const settings_t *c)
     t->typed[0] = 0;
     t->ntyped = 0;
     t->sent[0] = 0;
+    t->listens = 0;
+    t->rec_hit = 0;
     return training_retry(t, c);
 }
 
@@ -134,6 +153,7 @@ int training_start(training_t *t, const settings_t *c)
     t->total = t->correct = t->streak = t->best = 0;
     t->nhist = 0;
     t->last_pick = -1;
+    t->active_at = t->now;
     return training_next(t, c);
 }
 
@@ -157,7 +177,8 @@ static int split_tokens(const char *s, char (*out)[16], int cap)
 static int record(training_t *t, const settings_t *c, const char *expect, const char *got, int ok)
 {
     char te[48][16], tg[48][16];
-    int ne = split_tokens(expect, te, 48), ng = split_tokens(got, tg, 48), i;
+    int ne = split_tokens(expect, te, 48), ng = split_tokens(got, tg, 48), i, fx = TRAIN_CHECKED;
+    stats_t *st = t->stats;
     /* An early error says nothing about the characters not attempted. */
     if (!ok && ng < ne)
         ne = ng;
@@ -177,13 +198,28 @@ static int record(training_t *t, const settings_t *c, const char *expect, const 
             t->err[ch & 127]++;
         else if (t->err[ch & 127] > 0 && ok)
             t->err[ch & 127]--; /* forgive slowly when you get it right */
+        if (st)
+            stats_char(st, c->train_dir, ch, strcmp(a1, b1) != 0);
     }
+    if (st) {
+        if (t->total == 0)
+            st->dir[c->train_dir & 1].sessions++;
+        stats_answer(st, c->train_dir, ok, t->now - t->active_at, t->today);
+        if (c->train_content == TRAIN_CHARS && c->train_charset == CHARSET_KOCH && c->train_koch > st->koch)
+            st->koch = c->train_koch;
+    }
+    t->active_at = t->now;
     t->total++;
+    t->rec_hit = 0;
     if (ok) {
         t->correct++;
         t->streak++;
         if (t->streak > t->best)
             t->best = t->streak;
+        if (st && stats_streak(st, c->train_dir, c->train_level, t->streak, c->wpm, t->today)) {
+            t->rec_hit = 1;
+            fx |= TRAIN_RECORD;
+        }
     } else {
         t->streak = 0;
     }
@@ -196,8 +232,8 @@ static int record(training_t *t, const settings_t *c, const char *expect, const 
     /* Koch method: suggest the next lesson at 90% over 20+ items. */
     if (c->train_content == TRAIN_CHARS && c->train_charset == CHARSET_KOCH && t->total >= 20 &&
         t->correct * 10 >= t->total * 9 && t->total % 10 == 0 && c->train_koch < (int)strlen(KOCH_ORDER))
-        return TRAIN_KOCH;
-    return 0;
+        fx |= TRAIN_KOCH;
+    return fx;
 }
 
 static int same_text(const char *x, const char *y)
@@ -208,12 +244,32 @@ static int same_text(const char *x, const char *y)
     return strcmp(nx, ny) == 0;
 }
 
+/* A copy item is over: copied, or out of listens. */
+static void copy_done(training_t *t, int ok)
+{
+    stats_t *st = t->stats;
+    t->state = TS_RESULT;
+    if (!st)
+        return;
+    st->copy_items++;
+    st->copy_listens += maxi(t->listens, 1);
+    if (ok && t->listens <= 1)
+        st->copy_first++;
+    if (!ok)
+        st->copy_failed++;
+}
+
 static int check_copy(training_t *t, const settings_t *c)
 {
     int fx = record(t, c, t->target, t->typed, same_text(t->target, t->typed));
     if (t->ok) {
-        t->state = TS_RESULT;
+        copy_done(t, 1);
         return fx;
+    }
+    /* Out of listens: the item is lost, the answer is shown. */
+    if (t->listens >= training_max_listens(c)) {
+        copy_done(t, 0);
+        return fx | TRAIN_FAILED;
     }
     return fx | TRAIN_WRONG | training_retry(t, c);
 }
@@ -275,7 +331,16 @@ static int check_send(training_t *t, const settings_t *c, const cw_decoder *dec)
     t->send_ratio = dec_ratio(dec);
     fx = record(t, c, t->target, t->sent, compare_send(t, c) == 1);
     if (t->ok) {
+        stats_t *st = t->stats;
         t->state = TS_SEND_RESULT;
+        if (st && t->send_wpm > 0) {
+            int wpm10 = (int)(t->send_wpm * 10 + 0.5);
+            st->send_timed++;
+            st->send_wpm10 += wpm10;
+            st->send_ratio10 += (int)(t->send_ratio * 10 + 0.5);
+            if (wpm10 > st->send_best10)
+                st->send_best10 = wpm10;
+        }
         return fx;
     }
     return fx | TRAIN_WRONG | training_retry(t, c);
@@ -293,6 +358,18 @@ int training_enter(training_t *t, const settings_t *c, const cw_decoder *dec)
     case TS_SEND: return check_send(t, c, dec);
     default: return training_next(t, c);
     }
+}
+
+int training_replay(training_t *t, const settings_t *c)
+{
+    if (c->train_dir != TRAIN_COPY)
+        return 0;
+    if (t->state == TS_RESULT)
+        return TRAIN_PLAY;
+    if (t->state != TS_LISTEN || t->listens >= training_max_listens(c))
+        return 0;
+    t->listens++;
+    return TRAIN_PLAY;
 }
 
 int training_type(training_t *t, const settings_t *c, int ch)

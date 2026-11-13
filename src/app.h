@@ -10,11 +10,12 @@
 #include "dsp.h"
 #include "input.h"
 #include "settings.h"
+#include "stats.h"
 #include "training.h"
 #include "transcript.h"
 #include "ui.h"
 
-typedef enum { MODE_HOME, MODE_TX, MODE_RX, MODE_TRX, MODE_TRAIN, MODE_COUNT } app_mode;
+typedef enum { MODE_HOME, MODE_TX, MODE_RX, MODE_TRX, MODE_TRAIN, MODE_STATS, MODE_COUNT } app_mode;
 
 typedef enum { MODAL_NONE, MODAL_MENU, MODAL_TABLE, MODAL_SETTINGS, MODAL_HELP } modal_kind;
 
@@ -89,6 +90,15 @@ typedef struct app {
 
     training_t tr;
 
+    /* Training records and statistics, saved after every answer. */
+    stats_t stats;
+    char    stats_path[1024];
+    int     have_stats_path;
+    int     stats_error; /* saving failed: told once */
+    int     stats_scroll;
+    int     today; /* local day number (stats.h) */
+    double  today_at;
+
     double now; /* wall clock, ms */
     double started;
     int    quit;
@@ -112,6 +122,7 @@ int  app_top_modal(const app_t *a);
 int  app_has_modal(const app_t *a, int kind);
 void app_apply_settings(app_t *a);
 void app_save_settings(app_t *a);
+void app_save_stats(app_t *a);
 void app_reopen_audio(app_t *a);
 void app_toast(app_t *a, int warn, const char *fmt, ...);
 void app_release_keys(app_t *a);
@@ -155,6 +166,9 @@ int  train_key(app_t *a, const key_event *ev);
 void train_on_sent(app_t *a, const dec_token *tok);
 void train_operator_pressed(app_t *a);
 int  train_wants_keying(const app_t *a);
+
+void stats_render(app_t *a, rect_t r);
+int  stats_key(app_t *a, const key_event *ev);
 
 /* Modal windows. */
 void modal_render(app_t *a, int kind);

@@ -36,7 +36,8 @@ curl -fsSL https://raw.githubusercontent.com/gslf/CWtty/main/install.sh | sh -s 
 - **Transmit** – Space is a straight key, the left and right arrows are the dit and dah paddles of an electronic keyer (Iambic A, Iambic B, Ultimatic, Bug and Straight key are supported). A USB paddle or straight key adapter that acts as mouse buttons can replace the keyboard. The sidetone is click-free (raised cosine envelope) and the keyer runs inside the audio callback, so element and space lengths are sample-accurate.
 - **Receive** – Decodes CW from the microphone. Sensitivity, pitch, filter width, AFC and speed lock can be changed live. A waterfall, an envelope trace, the decoded key tape and a level meter show what the decoder sees.
 - **TX/RX (transceiver)** – Receives by default, touch the key and it switches to transmit, muting the receiver, then returns to receive afterthe break-in delay. 
-- **Training** – Learn to copy (CWtty sends, you type) or to send (CWtty shows, you key).
+- **Training** – Learn to copy (CWtty sends, you type) or to send (CWtty shows, you key). Copying has four levels: an item can be heard four times at level 1, down to once at level 4, and a counter shows the listens left. Your best streak of correct answers is a record (one per copy level, one for sending), kept across sessions: beat it and a big NEW RECORD appears.
+- **Statistics** – Records, answers and accuracy, time spent, listens per item, sending speed and dah/dit ratio, days practised and the daily streak, the activity of the last four weeks and how well each character goes.
 - **Morse table** – A floating reference table.
 - **Settings** – Tone, speed, Farnsworth, keyboard, USB pad or USB straight key, paddle mode, volume, envelope, receiver defaults, break-in delay, audio devices and buffer size. Saved automatically.
 
@@ -58,7 +59,7 @@ The header shows `KEYS kitty` or `KEYS win32` when everything is precise. In oth
 ```
 cwtty [options]
 
-  -m, --mode MODE     start in tx, rx, trx or train
+  -m, --mode MODE     start in tx, rx, trx, train or stats
   -c, --config FILE   use FILE for the settings
       --demo          feed the receiver with a simulated band
       --legacy-keys   do not use the kitty keyboard protocol
@@ -67,13 +68,13 @@ cwtty [options]
   -h, --help          show this help
 ```
 
-Settings are stored in `$XDG_CONFIG_HOME/cwtty/cwtty.conf` (Linux, default `~/.config/cwtty/cwtty.conf`), `~/Library/Application Support/cwtty/` (macOS) or `%APPDATA%\cwtty\` (Windows).
+Settings are stored in `$XDG_CONFIG_HOME/cwtty/cwtty.conf` (Linux, default `~/.config/cwtty/cwtty.conf`), `~/Library/Application Support/cwtty/` (macOS) or `%APPDATA%\cwtty\` (Windows). The training records and statistics are saved after every answer in `cwtty.stats`, next to the settings.
 
 ## Web app
 
 CWtty also runs in the browser at **[gslf.it/cwtty](https://gslf.it/cwtty/)**, as an installable PWA (works offline). On a touch screen the Dit, Key and Dah buttons are the key.
 
-It is the same C core compiled to WebAssembly. The microphone and the offline mode need HTTPS (or localhost). 
+It is the same C core compiled to WebAssembly. The microphone and the offline mode need HTTPS (or localhost). Settings, records and statistics are kept in the browser.
 
 
 ## Building from source

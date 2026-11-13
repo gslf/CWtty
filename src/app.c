@@ -86,6 +86,54 @@ void app_save_settings(app_t *a)
         app_toast(a, 1, "Could not save settings to %s", a->cfg_path);
 }
 
+void app_save_stats(app_t *a)
+{
+    static char text[STATS_TEXT_CAP];
+    int n;
+    if (!a->have_stats_path)
+        return;
+    n = stats_format(&a->stats, text, (int)sizeof text);
+    if (n >= 0 && plat_write_file(a->stats_path, text, (size_t)n) == 0) {
+        a->stats_error = 0;
+    } else if (!a->stats_error) {
+        a->stats_error = 1;
+        app_toast(a, 1, "Could not save the training records to %s", a->stats_path);
+    }
+}
+
+/* The statistics live next to the settings: cwtty.conf -> cwtty.stats. */
+static void load_stats(app_t *a)
+{
+    static char text[STATS_TEXT_CAP];
+    size_t n = strlen(a->cfg_path);
+    stats_reset(&a->stats);
+    a->tr.stats = &a->stats;
+    if (!a->have_cfg_path)
+        return;
+    str_copy(a->stats_path, sizeof a->stats_path, a->cfg_path);
+    if (n > 5 && strcmp(a->cfg_path + n - 5, ".conf") == 0)
+        a->stats_path[n - 5] = 0;
+    if (strlen(a->stats_path) + 7 > sizeof a->stats_path)
+        return;
+    strcat(a->stats_path, ".stats");
+    a->have_stats_path = 1;
+    if (plat_read_file(a->stats_path, text, sizeof text) >= 0)
+        stats_parse(&a->stats, text);
+}
+
+/* The clock and the day for the training (and its statistics). */
+static void tick(app_t *a)
+{
+    a->now = plat_time_ms();
+    if (a->today <= 0 || a->now - a->today_at > 5000.0) {
+        int y, m, d;
+        plat_local_date(&y, &m, &d);
+        a->today = stats_day(y, m, d);
+        a->today_at = a->now;
+    }
+    training_clock(&a->tr, a->now, a->today);
+}
+
 void app_reopen_audio(app_t *a)
 {
     audio_reopen(a->cfg.out_dev, a->cfg.in_dev, a->cfg.latency_ms);
@@ -136,7 +184,7 @@ void app_open_modal(app_t *a, int kind)
 
     switch (kind) {
     case MODAL_MENU: {
-        static const int mode_rows[MODE_COUNT] = {0, 0, 1, 2, 3};
+        static const int mode_rows[MODE_COUNT] = {0, 0, 1, 2, 3, 4};
         a->menu_sel = mode_rows[a->mode];
         break;
     }
@@ -346,6 +394,7 @@ void app_set_mode(app_t *a, int mode)
         train_leave(a);
 
     a->mode = mode;
+    a->stats_scroll = 0;
     rx_enable(a, mode == MODE_RX || mode == MODE_TRX);
     dec_clear(&a->txdec);
     a->tx_last[0] = a->tx_last_code[0] = 0;
@@ -381,9 +430,11 @@ app_t *app_create(const app_options *opt)
     }
     if (a->have_cfg_path)
         settings_load(&a->cfg, a->cfg_path);
+    load_stats(a);
 
     a->kbd = input_info();
-    a->now = a->started = plat_time_ms();
+    tick(a);
+    a->started = a->now;
     a->demo = opt && opt->demo;
     if (a->demo)
         demo_init();
@@ -432,7 +483,7 @@ void app_handle_key(app_t *a, const key_event *ev)
 {
     int top = app_top_modal(a);
 
-    a->now = plat_time_ms();
+    tick(a);
     if (ev->key == KEY_FOCUS_OUT) {
         /* Never leave the transmitter keyed when the window loses focus. */
         app_release_keys(a);
@@ -486,6 +537,10 @@ void app_handle_key(app_t *a, const key_event *ev)
         break;
     case MODE_TRAIN:
         if (train_key(a, ev))
+            return;
+        break;
+    case MODE_STATS:
+        if (stats_key(a, ev))
             return;
         break;
     default:
@@ -594,7 +649,7 @@ void app_update(app_t *a)
     int n, i;
     double clock;
 
-    a->now = plat_time_ms();
+    tick(a);
     if (a->now - a->audio_status_at > 500.0) {
         audio_get_status(&a->audio);
         a->audio_status_at = a->now;
@@ -633,7 +688,7 @@ static void render_header(app_t *a)
     static const struct {
         int         mode;
         const char *label;
-    } tabs[] = {{MODE_TX, "TX"}, {MODE_RX, "RX"}, {MODE_TRX, "TX/RX"}, {MODE_TRAIN, "TRAINING"}};
+    } tabs[] = {{MODE_TX, "TX"}, {MODE_RX, "RX"}, {MODE_TRX, "TX/RX"}, {MODE_TRAIN, "TRAINING"}, {MODE_STATS, "STATS"}};
     int w = scr_w(), x = 1, i, rx;
     char buf[96];
     const char *kname;
@@ -777,7 +832,8 @@ static int mode_hints(app_t *a, hint_t *h, int cap)
         } else if (a->cfg.train_dir == TRAIN_COPY) {
             H("Type", "Answer");
             H("Enter", a->tr.state == TS_RESULT ? "Next" : "Check / retry");
-            H("C-r", "Replay");
+            H("C-r", a->tr.state == TS_LISTEN && a->tr.listens >= training_max_listens(&a->cfg) ? "No listens left"
+                                                                                               : "Replay");
             if (!app_has_modal(a, MODAL_TABLE))
                 H("Esc", "Setup");
         } else {
@@ -788,6 +844,10 @@ static int mode_hints(app_t *a, hint_t *h, int cap)
             if (!app_has_modal(a, MODAL_TABLE))
                 H("Esc", "Setup");
         }
+        break;
+    case MODE_STATS:
+        H("↑↓", "Scroll");
+        H("p", "Training");
         break;
     default:
         break;
@@ -860,6 +920,9 @@ void app_render(app_t *a)
         break;
     case MODE_TRAIN:
         train_render(a, content);
+        break;
+    case MODE_STATS:
+        stats_render(a, content);
         break;
     default:
         break;

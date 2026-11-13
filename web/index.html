@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
   <meta name="theme-color" content="#0b0c0e">
   <meta name="description" content="Morse telegraphy: transmit, receive, transceive and train.">
   <title>CWtty</title>
@@ -21,84 +21,173 @@
     <symbol id="i-rx" viewBox="0 0 24 24"><path d="M12 4v15M6 13l6 6 6-6"/></symbol>
     <symbol id="i-trx" viewBox="0 0 24 24"><path d="M8 20V5M4 9l4-4 4 4M16 4v15M12 15l4 4 4-4"/></symbol>
     <symbol id="i-train" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3"/></symbol>
+    <symbol id="i-stats" viewBox="0 0 24 24"><path d="M5 20V12M10 20V5M15 20v-9M20 20V8"/></symbol>
     <symbol id="i-more" viewBox="0 0 24 24"><path d="M5 12h.01M12 12h.01M19 12h.01" stroke-width="3"/></symbol>
     <symbol id="i-table" viewBox="0 0 24 24"><path d="M4 7h3M10 7h10M4 12h9M16 12h4M4 17h3M10 17h3M16 17h4"/></symbol>
     <symbol id="i-settings" viewBox="0 0 24 24"><path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/></symbol>
     <symbol id="i-help" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9.5 9.5a2.5 2.5 0 1 1 3.5 2.3c-.6.3-1 .8-1 1.5v.7M12 17h.01"/></symbol>
     <symbol id="i-install" viewBox="0 0 24 24"><path d="M12 4v11M7 10l5 5 5-5M5 20h14"/></symbol>
+    <symbol id="i-back" viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></symbol>
+    <symbol id="i-next" viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></symbol>
+    <symbol id="i-replay" viewBox="0 0 24 24"><path d="M4 12a8 8 0 1 0 2.4-5.7M4 4v4h4"/></symbol>
+    <symbol id="i-clear" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></symbol>
+    <symbol id="i-mic" viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></symbol>
+    <symbol id="i-wave" viewBox="0 0 24 24"><path d="M3 12h3l2-5 3 10 3-8 2 3h5"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></symbol>
+    <symbol id="i-cross" viewBox="0 0 24 24"><path d="M7 7l10 10M17 7L7 17"/></symbol>
+    <symbol id="i-play" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></symbol>
   </svg>
 
   <header>
     <h1><b>CW</b>tty</h1>
     <!-- Tabs in the header, a tab bar at the bottom on phones. -->
     <nav>
+      <i class="indicator" aria-hidden="true"></i>
       <button data-mode="tx"><svg class="icon"><use href="#i-tx"/></svg><span>TX</span></button>
       <button data-mode="rx"><svg class="icon"><use href="#i-rx"/></svg><span>RX</span></button>
       <button data-mode="trx"><svg class="icon"><use href="#i-trx"/></svg><span>TX/RX</span></button>
       <button data-mode="train"><svg class="icon"><use href="#i-train"/></svg><span>Training</span></button>
+      <button data-mode="stats"><svg class="icon"><use href="#i-stats"/></svg><span>Stats</span></button>
       <button data-act="menu" class="more"><svg class="icon"><use href="#i-more"/></svg><span>More</span></button>
     </nav>
-    <p id="status"><span id="speed"></span><span id="out" title="Audio output">OUT</span><span id="in" title="Audio input">IN</span></p>
-    <button data-install hidden title="Install CWtty as an app"><svg class="icon"><use href="#i-install"/></svg><span>Install</span></button>
-    <button data-act="table" title="Morse table"><svg class="icon"><use href="#i-table"/></svg><span>Table</span></button>
-    <button data-act="settings" title="Settings"><svg class="icon"><use href="#i-settings"/></svg><span>Settings</span></button>
-    <button data-act="help" title="Help">?</button>
+    <p id="status">
+      <button id="speed" data-act="settings" title="Speed, tone and keyer: open the settings"></button>
+      <span id="out" title="Audio output">OUT</span><span id="in" title="Audio input">IN</span>
+    </p>
+    <p class="tools">
+      <button data-install hidden class="icon-button install" title="Install CWtty as an app"><svg class="icon"><use href="#i-install"/></svg><span>Install</span></button>
+      <button data-act="table" class="icon-button" title="Morse table"><svg class="icon"><use href="#i-table"/></svg></button>
+      <button data-act="settings" class="icon-button" title="Settings"><svg class="icon"><use href="#i-settings"/></svg></button>
+      <button data-act="help" class="icon-button" title="Help"><svg class="icon"><use href="#i-help"/></svg></button>
+    </p>
   </header>
 
   <main>
+    <!-- Transcript of TX, RX and TX/RX, with a guide while it is empty. -->
     <section id="log" class="panel">
-      <h2><span id="log-title">Transmit</span><small id="log-info"></small><button data-act="clear">Clear</button></h2>
+      <p class="bar"><small id="log-info"></small><button data-act="clear" class="icon-button quiet" title="Clear the text"><svg class="icon"><use href="#i-clear"/></svg></button></p>
       <div class="text" id="log-tx"></div>
       <div class="text" id="log-rx"></div>
       <div class="text" id="log-trx"></div>
+      <div class="empty" id="log-empty">
+        <svg class="icon" id="empty-icon"><use href="#i-tx"/></svg>
+        <p id="empty-title"></p>
+        <p id="empty-text"></p>
+        <p class="empty-actions" id="empty-actions"></p>
+      </div>
     </section>
 
     <section id="train" class="panel">
-      <h2><span id="train-title">Training</span><small id="train-info"></small></h2>
       <form id="setup">
-        <p class="about" id="setup-intro"></p>
-        <label>Direction
-          <select data-key="train_dir"><option value="0">Receive (copy)</option><option value="1">Send (key)</option></select></label>
-        <label>Material <select data-key="train_content" data-names="content"></select></label>
-        <label data-when="chars">Characters <select data-key="train_charset" data-names="charset"></select></label>
-        <label data-when="koch">Koch lesson
-          <input type="range" data-key="train_koch" min="2" step="1"><output></output></label>
-        <p data-when="koch" class="charset" id="koch-chars"></p>
-        <label data-when="chars">Group size
-          <input type="range" data-key="train_group" min="1" max="5" step="1"><output></output></label>
-        <label data-when="send">Pattern hint <input type="checkbox" data-key="train_hint"></label>
-        <label data-when="send">Spacing
-          <select data-key="train_strict"><option value="0">Relaxed (any pause)</option><option value="1">Strict (whole word)</option></select></label>
-        <button type="button" data-act="enter" class="primary">Start session <kbd>Enter</kbd></button>
+        <div class="seg big" data-key="train_dir" role="group" aria-label="Direction">
+          <button type="button" data-value="0"><svg class="icon"><use href="#i-rx"/></svg>Receive</button>
+          <button type="button" data-value="1"><svg class="icon"><use href="#i-tx"/></svg>Send</button>
+        </div>
+        <p class="lead" id="setup-intro"></p>
+
+        <div class="fields">
+          <div class="field stack"><span>Material</span>
+            <div class="seg" data-key="train_content" role="group" aria-label="Material">
+              <button type="button" data-value="0">Characters</button><button type="button" data-value="1">Words</button><button type="button" data-value="2">Q-codes</button>
+            </div></div>
+          <label class="field" data-when="chars"><span>Characters</span> <select data-key="train_charset" data-names="charset"></select></label>
+          <label class="field" data-when="koch"><span>Koch lesson</span>
+            <span class="range"><input type="range" data-key="train_koch" min="2" step="1"><output></output></span></label>
+          <p data-when="koch" class="charset" id="koch-chars"></p>
+          <div class="field" data-when="chars"><span>Group size</span>
+            <div class="seg" data-key="train_group" role="group" aria-label="Group size">
+              <button type="button" data-value="1">1</button><button type="button" data-value="2">2</button><button type="button" data-value="3">3</button><button type="button" data-value="4">4</button><button type="button" data-value="5">5</button>
+            </div></div>
+          <div class="field" data-when="copy"><span>Level</span>
+            <div class="seg" data-key="train_level" role="group" aria-label="Level">
+              <button type="button" data-value="1">1</button><button type="button" data-value="2">2</button><button type="button" data-value="3">3</button><button type="button" data-value="4">4</button>
+            </div></div>
+          <p class="hint" data-when="copy" id="level-hint"></p>
+          <label class="field" data-when="send"><span>Pattern hint</span> <input type="checkbox" class="switch" data-key="train_hint"></label>
+          <div class="field" data-when="send"><span>Spacing</span>
+            <div class="seg" data-key="train_strict" role="group" aria-label="Spacing">
+              <button type="button" data-value="0">Relaxed</button><button type="button" data-value="1">Strict</button>
+            </div></div>
+        </div>
+
+        <p class="start">
+          <button type="button" data-act="resume" id="resume" hidden>Resume session</button>
+          <button type="button" data-act="enter" class="primary" id="start">Start <kbd>Enter</kbd></button>
+        </p>
+        <p class="records-line" id="setup-records"></p>
         <p class="about" id="setup-about"></p>
-        <p class="about" id="setup-speed"></p>
+        <button type="button" class="link about" data-act="settings" id="setup-speed"></button>
       </form>
+
       <div id="session">
-        <p id="prompt"></p>
-        <p id="big"></p>
-        <p id="pattern" class="pattern"></p>
-        <p id="meaning"></p>
-        <input id="answer" autocomplete="off" autocorrect="off" autocapitalize="characters" spellcheck="false"
-               enterkeyhint="done" placeholder="Type what you hear" aria-label="Answer">
-        <p id="detail"></p>
-        <p id="live-sent" class="pattern"></p>
+        <p class="session-bar">
+          <button data-act="setup" class="back" title="Change the session (Esc)"><svg class="icon"><use href="#i-back"/></svg><span id="train-title"></span></button>
+          <small id="train-info"></small>
+        </p>
+        <ol id="steps" aria-label="Steps"><li></li><li></li><li></li></ol>
+        <div id="stage">
+          <p id="new-record" hidden>NEW RECORD</p>
+          <p id="prompt"></p>
+          <p id="listens"></p>
+          <p id="big"></p>
+          <p id="pattern" class="pattern"></p>
+          <p id="meaning"></p>
+          <input id="answer" autocomplete="off" autocorrect="off" autocapitalize="characters" spellcheck="false"
+                 enterkeyhint="done" placeholder="Type what you hear" aria-label="Answer">
+          <p id="detail"></p>
+          <p id="live-sent" class="pattern"></p>
+        </div>
         <p class="actions">
           <button data-act="tab" id="tab-act"></button>
           <button data-act="enter" id="enter-act" class="primary"></button>
-          <button data-act="setup">Setup <kbd>Esc</kbd></button>
         </p>
         <p id="stats"><span id="recent"></span><span id="score"></span><span id="weak"></span></p>
       </div>
     </section>
 
-    <section id="signal" class="panel">
-      <h2>Signal <small id="signal-info"></small></h2>
-      <div id="station">
-        <b id="ptt">RX</b>
-        <span id="breakin-label">LISTENING</span>
-        <span class="bar"><i id="breakin"></i></span>
-        <span id="breakin-ms"></span>
+    <section id="statistics" class="panel">
+      <p class="bar"><small id="stats-since"></small></p>
+      <div class="empty" id="stats-empty">
+        <svg class="icon"><use href="#i-stats"/></svg>
+        <p><b>No training yet</b></p>
+        <p>Records, accuracy and progress show up here once you answer in Training.</p>
+        <p class="empty-actions"><button data-mode="train" class="primary">Start training</button></p>
       </div>
+      <div id="stats-body">
+        <section class="block wide">
+          <h3>Records <small>best streak of correct answers</small></h3>
+          <div class="records" id="records"></div>
+        </section>
+        <section class="block wide">
+          <h3>Practice <small id="practice-note"></small></h3>
+          <div class="activity" id="activity"></div>
+          <p class="axis"><span>4 weeks ago</span><span id="activity-total"></span><span>today</span></p>
+        </section>
+        <section class="block">
+          <h3>Receive <small>copy by ear</small></h3>
+          <dl class="figures" id="copy-figures"></dl>
+          <div class="chars" id="copy-chars"></div>
+          <p class="weakest" id="copy-weak"></p>
+        </section>
+        <section class="block">
+          <h3>Send <small>keying</small></h3>
+          <dl class="figures" id="send-figures"></dl>
+          <div class="chars" id="send-chars"></div>
+          <p class="weakest" id="send-weak"></p>
+        </section>
+        <p class="legend"><span><i class="good"></i>90% or more</span><span><i class="fair"></i>75% or more</span><span><i class="poor"></i>less</span><span><i></i>not yet</span></p>
+      </div>
+    </section>
+
+    <section id="signal" class="panel">
+      <p class="bar">
+        <span class="seg small" id="source" role="group" aria-label="Input">
+          <button data-value="1"><svg class="icon"><use href="#i-mic"/></svg>Mic</button><button data-value="2"><svg class="icon"><use href="#i-wave"/></svg>Demo</button>
+        </span>
+        <b id="ptt">RX</b>
+        <span id="station"><span id="breakin-label">LISTENING</span><span class="bar-meter"><i id="breakin"></i></span><span id="breakin-ms"></span></span>
+        <small id="signal-info"></small>
+      </p>
       <div id="waterfall">
         <canvas id="wf" height="96"></canvas>
         <i id="passband"></i>
@@ -111,18 +200,21 @@
         <span>LVL</span><p class="meter"><i id="level"></i><b id="threshold"></b><small id="snr"></small></p>
       </div>
       <div class="controls">
-        <label class="rx-only">Input <select id="source"><option value="1">Microphone</option><option value="2">Demo band</option></select></label>
-        <label>Tune <input type="range" data-key="rx_freq" min="200" max="1500" step="10" data-unit=" Hz"><output></output></label>
-        <label class="rx-only">Filter <select data-key="rx_bw" data-names="bandwidth"></select></label>
-        <label>Sensitivity <input type="range" data-key="rx_sens" min="1" max="10" step="1"><output></output></label>
-        <label>AFC <input type="checkbox" data-key="rx_afc"></label>
-        <button data-act="lock" id="lock" class="rx-only" title="Lock or release the receive speed (s)"></button>
         <button data-act="zero" title="Tune to the strongest signal (z)">Zero-beat</button>
+        <button data-act="lock" id="lock" title="Lock or release the receive speed (s)"></button>
+        <label class="toggle">AFC <input type="checkbox" class="switch" data-key="rx_afc"></label>
+        <button class="disclosure" id="tuning-toggle" aria-expanded="false" aria-controls="tuning">Tuning</button>
+      </div>
+      <div class="tuning" id="tuning">
+        <div>
+          <label>Tune <span class="range"><input type="range" data-key="rx_freq" min="200" max="1500" step="10" data-unit=" Hz"><output></output></span></label>
+          <label>Filter <select data-key="rx_bw" data-names="bandwidth"></select></label>
+          <label>Sensitivity <span class="range"><input type="range" data-key="rx_sens" min="1" max="10" step="1"><output></output></span></label>
+        </div>
       </div>
     </section>
 
     <section id="keying" class="panel">
-      <h2>Keying <small id="keying-info"></small></h2>
       <canvas id="tape"></canvas>
       <p class="live"><b id="glyph"></b><span id="code" class="pattern"></span><small id="name"></small></p>
       <p class="keys">
@@ -130,6 +222,7 @@
         <button data-input="2"><kbd>Space</kbd><span>Key</span></button>
         <button data-input="1"><kbd>→</kbd><span>Dah</span></button>
       </p>
+      <small id="keying-info"></small>
     </section>
   </main>
 
@@ -140,6 +233,7 @@
     <p class="hints" data-for="train-setup"><kbd>Enter</kbd> start</p>
     <p class="hints" data-for="train-copy"><kbd>Type</kbd> answer <kbd>Enter</kbd> check, next <kbd>Tab</kbd> replay <kbd>Esc</kbd> setup</p>
     <p class="hints" data-for="train-send"><kbd>Space ← →</kbd> send <kbd>Enter</kbd> check, next <kbd>Tab</kbd> hint <kbd>Bksp</kbd> retry <kbd>Esc</kbd> setup</p>
+    <p class="hints" data-for="stats"><kbd>p</kbd> training</p>
     <output id="toast"></output>
   </footer>
 
@@ -154,47 +248,47 @@
 
   <dialog id="table-dialog" class="floating">
     <div>
-      <h2>Morse table <button data-act="table" title="Close">×</button></h2>
+      <h2>Morse table <button data-act="table" class="icon-button quiet" title="Close"><svg class="icon"><use href="#i-clear"/></svg></button></h2>
       <div id="table"></div>
     </div>
   </dialog>
 
   <dialog id="settings-dialog">
     <form method="dialog">
-      <h2>Settings <button title="Close">×</button></h2>
+      <h2>Settings <button class="icon-button quiet" title="Close"><svg class="icon"><use href="#i-clear"/></svg></button></h2>
       <fieldset>
         <legend>Keyer</legend>
-        <label>Tone <input type="range" data-key="tone_hz" min="300" max="1200" step="10" data-unit=" Hz"><output></output></label>
-        <label>Speed <input type="range" data-key="wpm" min="5" max="60" step="1" data-unit=" WPM"><output></output></label>
-        <label>Farnsworth <input type="range" data-key="farnsworth" min="0" step="1" data-unit=" WPM" data-off><output></output></label>
+        <label>Tone <span class="range"><input type="range" data-key="tone_hz" min="300" max="1200" step="10" data-unit=" Hz"><output></output></span></label>
+        <label>Speed <span class="range"><input type="range" data-key="wpm" min="5" max="60" step="1" data-unit=" WPM"><output></output></span></label>
+        <label>Farnsworth <span class="range"><input type="range" data-key="farnsworth" min="0" step="1" data-unit=" WPM" data-off><output></output></span></label>
         <label>Key with
           <select data-key="key_input"><option value="0">Keyboard, touch</option><option value="1">USB pad (mouse)</option><option value="2">USB straight key (mouse)</option></select></label>
         <label>Paddle mode <select data-key="keyer_mode" data-names="keyer"></select></label>
-        <label>Swap paddles <input type="checkbox" data-key="swap_paddles"></label>
-        <label>Volume <input type="range" data-key="volume" min="0" max="100" step="5" data-unit="%"><output></output></label>
-        <label>Tone shape <input type="range" data-key="rise_ms" min="1" max="10" step="1" data-unit=" ms rise"><output></output></label>
+        <label>Swap paddles <input type="checkbox" class="switch" data-key="swap_paddles"></label>
+        <label>Volume <span class="range"><input type="range" data-key="volume" min="0" max="100" step="5" data-unit="%"><output></output></span></label>
+        <label>Tone shape <span class="range"><input type="range" data-key="rise_ms" min="1" max="10" step="1" data-unit=" ms rise"><output></output></span></label>
       </fieldset>
       <fieldset>
         <legend>Receiver</legend>
-        <label>Speed <input type="range" data-key="rx_wpm" min="5" max="60" step="1" data-unit=" WPM"><output></output></label>
-        <label>Lock speed <input type="checkbox" data-key="rx_lock"></label>
-        <label>Pitch <input type="range" data-key="rx_freq" min="200" max="1500" step="10" data-unit=" Hz"><output></output></label>
+        <label>Speed <span class="range"><input type="range" data-key="rx_wpm" min="5" max="60" step="1" data-unit=" WPM"><output></output></span></label>
+        <label>Lock speed <input type="checkbox" class="switch" data-key="rx_lock"></label>
+        <label>Pitch <span class="range"><input type="range" data-key="rx_freq" min="200" max="1500" step="10" data-unit=" Hz"><output></output></span></label>
         <label>Filter <select data-key="rx_bw" data-names="bandwidth"></select></label>
-        <label>Sensitivity <input type="range" data-key="rx_sens" min="1" max="10" step="1"><output></output></label>
-        <label>AFC <input type="checkbox" data-key="rx_afc"></label>
+        <label>Sensitivity <span class="range"><input type="range" data-key="rx_sens" min="1" max="10" step="1"><output></output></span></label>
+        <label>AFC <input type="checkbox" class="switch" data-key="rx_afc"></label>
       </fieldset>
       <fieldset>
         <legend>Transceiver</legend>
-        <label>Break-in delay <input type="range" data-key="breakin_ms" min="50" max="3000" step="50" data-unit=" ms"><output></output></label>
-        <label>Sidetone <input type="checkbox" data-key="trx_sidetone"></label>
+        <label>Break-in delay <span class="range"><input type="range" data-key="breakin_ms" min="50" max="3000" step="50" data-unit=" ms"><output></output></span></label>
+        <label>Sidetone <input type="checkbox" class="switch" data-key="trx_sidetone"></label>
       </fieldset>
-      <p class="actions"><button type="button" data-act="test">Test tone</button><button class="primary">Done</button></p>
+      <p class="actions"><button type="button" data-act="test"><svg class="icon"><use href="#i-play"/></svg>Test tone</button><button class="primary">Done</button></p>
     </form>
   </dialog>
 
   <dialog id="help-dialog">
     <form method="dialog">
-      <h2>Help <button title="Close">×</button></h2>
+      <h2>Help <button class="icon-button quiet" title="Close"><svg class="icon"><use href="#i-clear"/></svg></button></h2>
       <dl>
         <dt>Space</dt><dd>Straight key: the tone sounds while it is held</dd>
         <dt>← →</dt><dd>Paddles: dit and dah (swap them in Settings). Iambic A, Iambic B, Ultimatic, Bug and Straight key modes</dd>
@@ -202,11 +296,14 @@
         <dt>USB pad</dt><dd>A paddle seen as mouse buttons: set Key with to USB pad, keep the pointer over the page. Left is dit, right dah</dd>
         <dt>USB key</dt><dd>A straight key seen as a mouse button: set Key with to USB straight key, keep the pointer over the page</dd>
         <dt>+ −</dt><dd>Receiver sensitivity: higher catches weaker signals, lower rejects noise</dd>
-        <dt>&lt; &gt;</dt><dd>Tune by 10 Hz, or click the waterfall</dd>
+        <dt>&lt; &gt;</dt><dd>Tune by 10 Hz, or tap the waterfall</dd>
         <dt>z</dt><dd>Zero-beat: tune to the strongest signal</dd>
         <dt>b B a s</dt><dd>Narrower, wider filter; AFC; lock the receive speed</dd>
         <dt>TX/RX</dt><dd>Listens by default. Touch the key to transmit: the receiver goes quiet and comes back after the break-in delay</dd>
-        <dt>Training</dt><dd>Enter starts, checks and moves on. A wrong character restarts the item. Tab replays (copy) or toggles the hint (send), Esc goes back to the setup</dd>
+        <dt>Training</dt><dd>Choose Receive or Send, then Start. Enter checks and moves on; a wrong character restarts the item. Tab replays (copy) or toggles the hint (send). Setup (or Esc) changes the session, and Resume brings it back while nothing changed</dd>
+        <dt>Level</dt><dd>Copy: how many times an item can be heard, 4 at level 1 down to 1 at level 4. Out of listens, a wrong answer shows the item</dd>
+        <dt>Records</dt><dd>The best streak of correct answers, one per copy level and one for send. Beat it for a NEW RECORD</dd>
+        <dt>Stats</dt><dd>Records, accuracy, time, listens, sending speed, the last four weeks and each character. Kept in this browser</dd>
       </dl>
       <p class="about">CWtty, the PWA of the terminal app: the same C core, compiled to WebAssembly. Works offline once loaded. MIT License.</p>
     </form>

@@ -29,7 +29,7 @@ static void usage(void)
     printf("CWtty %s - Morse telegraphy in your terminal\n\n"
            "Usage: cwtty [options]\n\n"
            "Options:\n"
-           "  -m, --mode MODE     start in tx, rx, trx or train\n"
+           "  -m, --mode MODE     start in tx, rx, trx, train or stats\n"
            "  -c, --config FILE   use FILE for the settings\n"
            "      --legacy-keys   do not use the kitty keyboard protocol\n"
            "      --demo          feed the receiver with a simulated band\n"
@@ -52,6 +52,8 @@ static int parse_mode(const char *s)
         return MODE_TRX;
     if (strcmp(s, "train") == 0 || strcmp(s, "training") == 0)
         return MODE_TRAIN;
+    if (strcmp(s, "stats") == 0)
+        return MODE_STATS;
     return -1;
 }
 
@@ -128,7 +130,7 @@ int main(int argc, char **argv)
         } else if ((strcmp(s, "-m") == 0 || strcmp(s, "--mode") == 0) && i + 1 < argc) {
             opt.start_mode = parse_mode(argv[++i]);
             if (opt.start_mode < 0) {
-                fprintf(stderr, "cwtty: unknown mode '%s' (use tx, rx, trx or train)\n", argv[i]);
+                fprintf(stderr, "cwtty: unknown mode '%s' (use tx, rx, trx, train or stats)\n", argv[i]);
                 return 2;
             }
         } else if ((strcmp(s, "-c") == 0 || strcmp(s, "--config") == 0) && i + 1 < argc) {

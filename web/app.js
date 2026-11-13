@@ -8,6 +8,11 @@ import { offerInstall } from './install.js';
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
 const el = (tag, className = '') => Object.assign(document.createElement(tag), { className });
+const make = (tag, className, ...children) => {
+  const node = el(tag, className);
+  node.append(...children);
+  return node;
+};
 
 // ---- The C core ----
 
@@ -34,12 +39,12 @@ const get = (key) => w.cw_get(cstr(key));
 const set = (key, value) => w.cw_set(cstr(key), value);
 
 // The enumerations of wasm/page.c and src/training.h.
-const MODES = ['tx', 'rx', 'trx', 'train'];
+const MODES = ['tx', 'rx', 'trx', 'train', 'stats'];
 const RX = 0, TX = 1;
 const CHAR = 0, PROSIGN = 1, SPACE = 3, LINE = 4, KEY_UP = 5, KEY_DOWN = 6;
 const SETUP = 0, LISTEN = 1, RESULT = 2, SEND = 3;
-const PLAY = 1, WRONG = 4, KOCH = 8;
-const OFF = 0, MIC = 1;
+const PLAY = 1, WRONG = 4, KOCH = 8, CHECKED = 16;
+const OFF = 0, MIC = 1, DEMO = 2;
 
 const FMIN = 250, FMAX = 1250; // the waterfall, as in src/mode_rx.c
 const HEAT = [[14, 15, 17], [42, 31, 5], [110, 78, 0], [212, 156, 0], [255, 213, 74], [255, 246, 214]];
@@ -82,6 +87,8 @@ let trainState;
 const held = new Set(); // inputs down: 0 left paddle, 1 right paddle, 2 straight key
 const edges = { tx: [], rx: [] }; // key transitions [ms, down], for the tapes
 let lastTx = { text: '', at: -Infinity };
+let micFailed = false;
+const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)');
 
 // ---- Settings ----
 
@@ -103,11 +110,24 @@ function restore() {
   }
 }
 
+// A segmented control shows its value: the button pressed, the thumb under it.
+function segment(seg, value) {
+  const buttons = [...seg.querySelectorAll('button')], i = buttons.findIndex((b) => +b.dataset.value === value);
+  buttons.forEach((b, k) => b.setAttribute('aria-pressed', k === i));
+  seg.style.setProperty('--n', buttons.length);
+  seg.style.setProperty('--i', Math.max(i, 0));
+  seg.style.setProperty('--shown', i < 0 ? 0 : 1);
+}
+
 // Shows the settings in every control bound to them (or only to key).
 function refresh(key) {
   $('[data-key="farnsworth"]').max = get('wpm') - 1;
   for (const control of $$(key ? `[data-key="${key}"]` : '[data-key]')) {
     const value = get(control.dataset.key), out = control.nextElementSibling;
+    if (control.classList.contains('seg')) {
+      segment(control, value);
+      continue;
+    }
     if (control.type === 'checkbox') control.checked = value > 0;
     else control.value = value;
     if (out?.tagName === 'OUTPUT') out.value = 'off' in control.dataset && !value ? 'Off' : value + (control.dataset.unit ?? '');
@@ -124,27 +144,83 @@ function changed() {
   save();
 }
 
+// ---- Training statistics, kept in the browser as the text form of src/stats.c ----
+
+const STATS_KEY = 'cwtty-stats';
+let statsSerial = 0; // changes with the statistics: the view redraws
+
+function loadStats(text) {
+  if (typeof text !== 'string') return;
+  const p = w.cw_stats_buf(), cap = w.cw_stats_cap();
+  const { written } = encoder.encodeInto(text, heap().subarray(p, p + cap - 1));
+  heap()[p + written] = 0;
+  w.cw_stats_load();
+  statsSerial++;
+}
+
+function saveStats() {
+  statsSerial++;
+  const p = w.cw_stats_save();
+  try {
+    if (p) localStorage[STATS_KEY] = str(p);
+  } catch {} // private mode: kept until the page closes
+}
+
+// Local day number, as in src/stats.h: days since 1970-01-01.
+function today() {
+  const d = new Date();
+  return Math.round(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()) / 86400000);
+}
+
+const dateOf = (day) =>
+  day > 0 ? new Date(day * 86400000).toLocaleDateString('en-GB', { timeZone: 'UTC', day: 'numeric', month: 'short', year: 'numeric' }) : '';
+
+const stat = (key) => w.cw_stat(cstr(key));
+
 // ---- Modes and the receiver's input ----
 
 async function setMode(name) {
+  // Training again, from a session: back to its setup (the session can be resumed).
+  if (name === mode && name === 'train') {
+    if (view !== 'train-setup') actions.setup();
+    return;
+  }
   releaseAll();
   audio.send('stop');
   mode = name;
   w.cw_mode(MODES.indexOf(name));
   for (const button of $$('nav [data-mode]')) button.setAttribute('aria-current', button.dataset.mode === name);
-  $('#log-title').textContent = { tx: 'Transmit', rx: 'Receive', trx: 'Transceiver', train: '' }[name];
+  moveIndicator();
   $('#log-info').textContent = '';
   changed();
   await listen();
 }
 
+// The pill under the active tab slides to it (a smaller one behind the icon on phones).
+function moveIndicator() {
+  const button = $(`nav [data-mode="${mode}"]`), pill = $('nav .indicator');
+  if (!button) return;
+  const bar = getComputedStyle($('nav')).position === 'fixed', width = bar ? Math.min(button.offsetWidth - 12, 64) : button.offsetWidth;
+  pill.style.setProperty('--w', `${width}px`);
+  pill.style.setProperty('--x', `${button.offsetLeft + (button.offsetWidth - width) / 2}px`);
+}
+
 async function listen() {
   const want = mode === 'rx' || mode === 'trx' ? source : OFF;
   const ok = await audio.microphone(want === MIC);
-  if (!ok) toast('No microphone: allow it, or listen to the demo band', true);
+  micFailed = want === MIC && !ok;
+  // An empty transcript explains it; a full one gets a toast.
+  if (micFailed && log()?.childElementCount) toast('No microphone: allow it, or listen to the demo band', true);
   listening = ok && want !== OFF;
   w.cw_source(listening ? want : OFF);
   $('#in').classList.toggle('used', want !== OFF);
+  segment($('#source'), source);
+}
+
+async function useSource(s) {
+  source = s;
+  save();
+  await listen();
 }
 
 // ---- Keying ----
@@ -184,9 +260,11 @@ function train(fx) {
     toast(`${Math.floor((w.cw_train_correct() * 100) / w.cw_train_total())}% correct: ready for Koch lesson ${get('train_koch') + 1}`);
   if (fx & WRONG) {
     if (send) releaseAll();
+    restart($('#stage'), 'shake');
     toast(send ? 'Not quite: start sending again from the beginning' : 'Not quite: listen and start again', true);
   }
   if (fx & PLAY) play(str(w.cw_train_target()), 350);
+  if (fx & CHECKED) saveStats();
 }
 
 // ---- What the worklet reports ----
@@ -242,7 +320,9 @@ function write(log, dir, kind, text) {
   if (kind === SPACE) {
     if (line.lastChild && line.lastChild.textContent !== ' ') line.append(' ');
   } else if (kind === CHAR) {
-    line.append(text);
+    const char = make('span', 'in', text);
+    char.addEventListener('animationend', () => char.replaceWith(text), { once: true });
+    line.append(char);
   } else {
     line.append(glyphs(el('span', kind === PROSIGN ? '' : 'unknown'), text));
   }
@@ -254,6 +334,21 @@ function write(log, dir, kind, text) {
 function setText(node, text) {
   if (node.textContent !== text) node.textContent = text;
 }
+
+// Plays a CSS animation again.
+function restart(node, className) {
+  node.classList.remove(className);
+  void node.offsetWidth;
+  node.classList.add(className);
+}
+
+const icon = (name) => {
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg'), use = document.createElementNS(svg.namespaceURI, 'use');
+  svg.setAttribute('class', 'icon');
+  use.setAttribute('href', `#i-${name}`);
+  svg.append(use);
+  return svg;
+};
 
 // Text with the prosigns ("<AR>") as overlined letters.
 function glyphs(node, text) {
@@ -388,23 +483,69 @@ function currentView() {
 
 function frame() {
   requestAnimationFrame(frame);
+  w.cw_clock(performance.now(), today());
   const v = currentView();
   if (v !== view) view = document.body.dataset.view = v;
   enable();
   $('#out').classList.toggle('on', audio.running());
   $('#in').classList.toggle('on', listening);
+  if (v === 'tx' || v === 'rx' || v === 'trx') renderEmpty();
   if (v === 'tx' || v === 'trx' || v === 'train-send') renderKeying();
   if (v === 'rx' || v === 'trx') renderSignal();
   if (v.startsWith('train')) renderTraining(v);
+  if (v === 'stats') renderStats();
   if ($('#table-dialog').open) renderTable();
-  if (v === 'trx') setText($('#log-info'), $('#log-trx').childElementCount ? 'QSO log' : 'listening, key to break in');
+  if (v === 'trx') setText($('#log-info'), $('#log-trx').childElementCount ? 'QSO log' : '');
+}
+
+// What to do first, while the transcript is empty.
+function renderEmpty() {
+  const box = $('#log-empty'), empty = !log().childElementCount;
+  box.classList.toggle('gone', !empty);
+  $('#log [data-act="clear"]').hidden = empty;
+  if (!empty) return;
+  const input = get('key_input'), touch = matchMedia('(pointer: coarse)').matches;
+  const keys = input === 1 ? 'Key with your USB paddle.' : input === 2 ? 'Key with your USB straight key.'
+             : touch ? 'Hold Key below, or tap Dit and Dah.' : 'Hold Space for a straight key, or use ← → as paddles.';
+  let name = mode, title, text, buttons = [];
+  if (mode === 'tx') {
+    title = 'Start keying';
+    text = `${keys} What you send is decoded here.`;
+  } else if (!listening && source === MIC) {
+    name = 'mic';
+    title = micFailed ? 'No microphone' : 'Waiting for the microphone';
+    text = micFailed ? 'Allow the microphone for this page, or listen to the demo band to see how decoding works.'
+                     : 'Allow it when the browser asks.';
+    buttons = micFailed ? [['mic', 'Try again', ''], ['demo', 'Demo band', 'primary']] : [];
+  } else if (mode === 'rx') {
+    name = source === MIC ? 'mic' : 'wave';
+    title = source === MIC ? 'Listening' : 'Listening to the demo band';
+    text = 'Decoded text appears here. Tap a signal on the waterfall to tune, or Zero-beat.';
+    buttons = source === MIC ? [['demo', 'Try the demo band', '']] : [['mic', 'Use the microphone', '']];
+  } else {
+    title = 'Listening';
+    text = `Key to break in and transmit; the receiver comes back after the break-in delay. ${keys}`;
+  }
+  const key = [name, title, text, buttons].join('|');
+  if (box.dataset.key === key) return;
+  box.dataset.key = key;
+  $('#empty-icon use').setAttribute('href', `#i-${name}`);
+  setText($('#empty-title'), title);
+  setText($('#empty-text'), text);
+  $('#empty-actions').replaceChildren(...buttons.map(([act, text, className]) => {
+    const button = make('button', className, text);
+    button.type = 'button';
+    button.dataset.act = act;
+    return button;
+  }));
 }
 
 function renderKeying() {
   const live = str(w.cw_pattern(TX)), recent = performance.now() - lastTx.at < 1500;
   const text = live ? str(w.cw_live(TX)) : recent ? lastTx.text : '';
-  const entry = BY_TEXT.get(text);
-  glyphs($('#glyph'), text);
+  const entry = BY_TEXT.get(text), glyph = $('#glyph');
+  if (text && glyph.dataset.text !== text) restart(glyph, 'bump');
+  glyphs(glyph, text);
   pattern($('#code'), live || (entry?.code ?? ''));
   setText($('#name'), entry?.name ?? '');
   $('.live').classList.toggle('old', !live);
@@ -465,8 +606,8 @@ function renderTraining(v) {
   const send = get('train_dir'), content = get('train_content'), koch = content === 0 && get('train_charset') === 0;
   const total = w.cw_train_total(), correct = w.cw_train_correct();
   const material = koch ? `Koch ${get('train_koch')}` : content === 0 ? NAMES.charset[get('train_charset')][1] : NAMES.content[content][1];
-  setText($('#train-title'), v === 'train-setup' ? 'Training' : `Training  ${send ? 'send' : 'copy'}  ${material}`);
-  setText($('#train-info'), send ? `${get('train_strict') ? 'strict' : 'relaxed'}  ·  score ${correct}/${total}` : total ? `score ${correct}/${total}` : '');
+  setText($('#train-title'), send ? `Send · ${material}` : `Copy · ${material} · level ${get('train_level')}`);
+  setText($('#train-info'), total ? `${correct}/${total}` : '');
   if (v === 'train-setup') return renderSetup(send, content, koch);
 
   const state = w.cw_train_state(), ok = w.cw_train_ok(), target = str(w.cw_train_target());
@@ -475,13 +616,39 @@ function renderTraining(v) {
   const result = state === RESULT || state > SEND;
   let detail = '';
 
-  if (state === LISTEN) setText(prompt, report.playing ? `Listen${'...'.slice(0, ((performance.now() / 350) | 0) % 4)}` : 'Type what you heard');
-  else if (state === SEND) setText(prompt, 'Send');
-  else setText(prompt, ok ? '● Correct' : '▲ Not quite');
-  prompt.className = result ? (ok ? 'ok' : 'err') : '';
+  // The prompt says what to do now; the steps show where that is in the item.
+  const playing = state === LISTEN && report.playing;
+  const [say, mark] = playing ? ['Listen', ''] : state === LISTEN ? ['Type what you heard', ''] : state === SEND ? ['Key this', '']
+    : ok ? ['Correct', 'check'] : [send ? 'Not quite' : 'Not quite · no listens left', 'cross'];
+  if (prompt.dataset.key !== say) {
+    prompt.dataset.key = say;
+    prompt.replaceChildren(...(mark ? [icon(mark)] : []), say);
+  }
+  prompt.className = result ? (ok ? 'ok' : 'err') : playing ? 'playing' : '';
+  $('#new-record').hidden = !(result && w.cw_train_rec_hit());
 
-  glyphs(big, state === LISTEN ? typed || ' ' : target);
-  big.className = state === LISTEN ? 'typed' : result && ok ? 'ok' : '';
+  const steps = $('#steps'), names = send ? ['Read', 'Key', 'Result'] : ['Listen', 'Type', 'Result'];
+  const now = result ? 2 : send ? (sent || held.size || str(w.cw_pattern(TX)) ? 1 : 0) : playing && !typed ? 0 : 1;
+  [...steps.children].forEach((li, i) => {
+    setText(li, names[i]);
+    li.className = i < now ? 'done' : i === now ? 'now' : '';
+  });
+  steps.style.setProperty('--step', now);
+
+  // The listens of a copy item: the used ones lit.
+  const listens = $('#listens'), max = w.cw_train_max_listens(), used = Math.min(w.cw_train_listens(), max);
+  listens.hidden = state !== LISTEN;
+  if (state === LISTEN && listens.dataset.key !== `${used}/${max}`) {
+    listens.dataset.key = `${used}/${max}`;
+    listens.className = used >= max ? 'none-left' : '';
+    listens.replaceChildren(
+      ...Array.from({ length: max }, (_, i) => make('i', i < used ? 'used' : '', i < used ? '●' : '○')),
+      ` listen ${used} of ${max}`);
+  }
+
+  if (state === LISTEN) typedView(big, typed);
+  else glyphs(big, target);
+  big.className = state === LISTEN ? 'typed' : result ? (ok ? 'ok' : 'err') : '';
   pattern($('#pattern'), state === LISTEN || (state === SEND && !hint) ? '' : codes(target));
   $('#pattern').classList.toggle('faint', !hint && state !== RESULT);
   setText($('#meaning'), state === LISTEN ? '' : str(w.cw_train_meaning()));
@@ -492,12 +659,19 @@ function renderTraining(v) {
   glyphs($('#detail'), detail);
   pattern($('#live-sent'), state === SEND ? str(w.cw_pattern(TX)) : '');
 
-  answer.hidden = state !== LISTEN;
-  if (state === LISTEN && state !== trainState && !$('dialog:modal')) answer.focus();
+  // Copy keeps the field focused through the result (out of sight): the phone
+  // keeps its keyboard and Enter goes on. Send has no field: Space keys.
+  answer.hidden = !!send;
+  answer.classList.toggle('away', state !== LISTEN);
+  answer.enterKeyHint = result ? 'next' : 'done';
+  if (send && document.activeElement === answer) answer.blur();
+  if (!send && state !== trainState && !$('dialog:modal')) answer.focus({ preventScroll: true });
   if (answer.value !== typed && state === LISTEN) answer.value = typed;
   trainState = state;
 
-  label($('#tab-act'), send ? (hint ? 'Hide hint' : 'Show hint') : 'Replay', 'Tab');
+  const left = max - used, spent = !send && state === LISTEN && left <= 0;
+  label($('#tab-act'), send ? (hint ? 'Hide hint' : 'Show hint') : spent ? 'No listens left' : state === LISTEN ? `Replay (${left} left)` : 'Replay', 'Tab');
+  $('#tab-act').disabled = spent;
   label($('#enter-act'), result ? 'Next' : 'Check', 'Enter');
 
   const recent = $('#recent'), history = [];
@@ -506,12 +680,28 @@ function renderTraining(v) {
     recent.dataset.history = history.join('');
     recent.replaceChildren(...history.map((r) => Object.assign(el('span', r ? 'ok' : 'err'), { textContent: r ? '●' : '○' })));
   }
-  setText($('#score'), total ? `${correct}/${total}  ${Math.floor((correct * 100) / total)}%  streak ${w.cw_train_streak()}  best ${w.cw_train_best()}` : '');
+  const record = w.cw_train_record();
+  setText($('#score'), `${total ? `${correct}/${total}  ${Math.floor((correct * 100) / total)}%  streak ${w.cw_train_streak()}  best ${w.cw_train_best()}  ` : ''}record ${record || '–'}`);
   setText($('#weak'), str(w.cw_train_weak()));
 }
 
+// What the student typed, the newest character popping in, then a caret.
+function typedView(big, typed) {
+  if (big.dataset.text === `\u0001${typed}`) return;
+  const grew = typed.length > (big.dataset.typed ?? '').length;
+  glyphs(big, typed);
+  big.dataset.text = `\u0001${typed}`; // never the target's: glyphs() redraws it
+  big.dataset.typed = typed;
+  const last = big.lastChild;
+  if (grew && last?.nodeType === Node.TEXT_NODE && last.textContent) {
+    last.textContent = last.textContent.slice(0, -1);
+    big.append(make('span', 'pop', typed.slice(-1)));
+  }
+  big.append(make('span', 'caret', '▁'));
+}
+
 function renderSetup(send, content, koch) {
-  const when = { chars: content === 0, koch, send: !!send };
+  const when = { chars: content === 0, koch, send: !!send, copy: !send };
   for (const row of $$('#setup [data-when]')) row.hidden = !when[row.dataset.when];
   setText($('#setup-intro'), send ? 'Send: CWtty shows the text, you key it with Space, the paddles or the buttons.'
                                   : 'Copy by ear: CWtty sends, you type what you hear.');
@@ -523,8 +713,149 @@ function renderSetup(send, content, koch) {
     }
   }
   setText($('#setup-about'), ABOUT[content === 0 ? (koch ? 0 : 1) : content + 1]);
+  renderSetupRecords(send);
+  const listens = 5 - get('train_level'), record = stat(`copy_record_${get('train_level')}`);
+  setText($('#level-hint'), `${listens} listen${listens > 1 ? 's' : ''} per item  ·  record ${record || 'none yet'}`);
+  const resumable = !!w.cw_train_resumable();
+  $('#resume').hidden = !resumable;
+  label($('#start'), resumable ? 'New session' : 'Start', 'Enter');
   const f = get('farnsworth');
   setText($('#setup-speed'), `Speed ${get('wpm')} WPM${f ? `, spaced as ${f} WPM (Farnsworth)` : ''}  ·  tone ${get('tone_hz')} Hz`);
+}
+
+// The records to beat: one per copy level, one for send.
+function renderSetupRecords(send) {
+  const line = $('#setup-records'), level = get('train_level');
+  const values = send ? [stat('send_record')] : [1, 2, 3, 4].map((l) => stat(`copy_record_${l}`));
+  const key = `${send}:${level}:${values}`;
+  if (line.dataset.key === key) return;
+  line.dataset.key = key;
+  if (send) {
+    const v = values[0];
+    line.replaceChildren(make('small', '', 'RECORD'), make('b', '', v || 'none yet'), v ? ` correct answer${v > 1 ? 's' : ''} in a row` : '');
+  } else {
+    line.replaceChildren(
+      make('small', '', 'RECORDS'),
+      ...values.map((v, i) => make('span', i + 1 === level ? 'current' : '', `L${i + 1} `, make('b', '', v || '–'))),
+      make('small', '', 'best streaks'));
+  }
+}
+
+// ---- Statistics view ----
+
+let statsDrawn;
+
+function fmtTime(seconds) {
+  if (seconds < 60) return `${seconds} s`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)} min`;
+  return `${Math.floor(seconds / 3600)}h ${String(Math.floor(seconds / 60) % 60).padStart(2, '0')}m`;
+}
+
+const pct = (part, whole) => (whole > 0 ? Math.floor((part * 100) / whole) : 0);
+
+function figures(dl, rows) {
+  dl.replaceChildren(
+    ...rows.flatMap(([label, value, detail]) => [
+      make('dt', '', label),
+      make('dd', value ? '' : 'none', value || '–'),
+      make('dd', 'detail', value ? detail ?? '' : ''),
+    ]));
+}
+
+const CHAR_ROWS = ['ABCDEFGHIJKLMNOPQRSTUVWXYZ', '0123456789.,?/=-()\'":;!@'];
+
+function characters(dir, grid, weak) {
+  grid.replaceChildren(
+    ...CHAR_ROWS.map((row) => {
+      const line = el('p');
+      for (const ch of row) {
+        const code = ch.charCodeAt(0), p = w.cw_stat_pct(dir, code), seen = w.cw_stat_seen(dir, code);
+        const span = make('span', p < 0 ? '' : p >= 90 ? 'good' : p >= 75 ? 'fair' : 'poor', ch);
+        span.title = p < 0 ? `${ch}: not yet` : `${ch}: ${p}% of ${seen}`;
+        line.append(span);
+      }
+      return line;
+    }));
+  const list = [...str(w.cw_stat_weak(dir))];
+  weak.replaceChildren(
+    make('small', '', 'Weakest'),
+    ...(list.length
+      ? list.map((ch) => make('span', '', `${ch} `, make('small', '', `${w.cw_stat_pct(dir, ch.charCodeAt(0))}%`)))
+      : [make('small', '', 'none yet')]));
+}
+
+function renderStats() {
+  const key = `${statsSerial}:${today()}:${get('train_level')}`;
+  if (statsDrawn === key) return;
+  statsDrawn = key;
+
+  const copyAnswers = stat('copy_answers'), sendAnswers = stat('send_answers');
+  $('#stats-empty').hidden = copyAnswers + sendAnswers > 0;
+  $('#stats-body').hidden = copyAnswers + sendAnswers === 0;
+  setText($('#stats-since'), stat('first_day') > 0 ? `since ${dateOf(stat('first_day'))}` : '');
+  if (copyAnswers + sendAnswers === 0) return;
+
+  // Records: four copy levels and send.
+  const level = get('train_level');
+  const tile = (title, prefix, current) => {
+    const value = stat(prefix);
+    const detail = value ? [`${stat(`${prefix}_wpm`)} WPM`, dateOf(stat(`${prefix}_day`))].filter(Boolean).join('  ·  ') : 'not yet';
+    return make('div', `record${current ? ' current' : ''}${value ? '' : ' none'}`, make('small', '', title), make('b', '', value || '–'), make('span', '', detail));
+  };
+  $('#records').replaceChildren(
+    ...[1, 2, 3, 4].map((l) => tile(`Receive · level ${l}`, `copy_record_${l}`, l === level)),
+    tile('Send', 'send_record', false));
+  [...$('#records').children].forEach((card, i) => card.style.setProperty('--i', i));
+
+  // Practice: days and the last four weeks.
+  const koch = stat('koch'), days = stat('days');
+  setText($('#practice-note'), `${days} day${days === 1 ? '' : 's'} practised  ·  streak ${w.cw_stat_day_streak()} (best ${stat('best_day_streak')})${koch > 0 ? `  ·  Koch ${koch}` : ''}`);
+  const counts = Array.from({ length: 28 }, (_, i) => w.cw_stat_activity(27 - i));
+  const most = Math.max(1, ...counts);
+  $('#activity').replaceChildren(
+    ...counts.map((n, i) => {
+      const bar = el('i', `${n ? '' : 'zero'}${i === 27 ? ' today' : ''}`);
+      bar.style.setProperty('--h', n ? Math.max(n / most, 0.06) : 0);
+      bar.style.setProperty('--i', i);
+      bar.title = `${dateOf(today() - 27 + i)}: ${n} answer${n === 1 ? '' : 's'}`;
+      return bar;
+    }));
+  const sum = counts.reduce((a, b) => a + b, 0);
+  setText($('#activity-total'), `${sum} answer${sum === 1 ? '' : 's'}`);
+
+  // Receive and send.
+  const items = stat('copy_items'), timed = stat('send_timed');
+  const sessions = (n) => `${n} session${n === 1 ? '' : 's'}`;
+  figures($('#copy-figures'), [
+    ['Answers', copyAnswers, `${pct(stat('copy_correct'), copyAnswers)}% correct`],
+    ['First listen', items && `${pct(stat('copy_first'), items)}%`, 'items copied at once'],
+    ['Listens / item', items && (stat('copy_listens') / items).toFixed(1), `over ${items} item${items === 1 ? '' : 's'}`],
+    ['Out of listens', items && String(stat('copy_failed')), 'items lost'],
+    ['Time', copyAnswers && fmtTime(stat('copy_seconds')), sessions(stat('copy_sessions'))],
+  ]);
+  figures($('#send-figures'), [
+    ['Answers', sendAnswers, `${pct(stat('send_correct'), sendAnswers)}% correct`],
+    ['Best speed', timed && (stat('send_best10') / 10).toFixed(1), 'WPM, fastest correct item'],
+    ['Average speed', timed && (stat('send_wpm10') / 10 / timed).toFixed(1), 'WPM'],
+    ['Dah/dit ratio', timed && `1:${(stat('send_ratio10') / 10 / timed).toFixed(1)}`, '1:3 is ideal'],
+    ['Time', sendAnswers && fmtTime(stat('send_seconds')), sessions(stat('send_sessions'))],
+  ]);
+  characters(0, $('#copy-chars'), $('#copy-weak'));
+  characters(1, $('#send-chars'), $('#send-weak'));
+  for (const number of $$('.record b, .figures dd:not(.detail)')) countUp(number);
+}
+
+// A figure counts up to its value ("85%", "1.4", "23").
+function countUp(node) {
+  const m = /^(\d+)(\.\d)?(%?)$/.exec(node.textContent);
+  if (!m || reducedMotion.matches) return;
+  const value = parseFloat(m[1] + (m[2] ?? '')), places = m[2] ? 1 : 0, t0 = performance.now();
+  const tick = (now) => {
+    const k = Math.min((now - t0) / 700, 1);
+    node.textContent = (value * (1 - (1 - k) ** 3)).toFixed(places) + m[3];
+    if (k < 1) requestAnimationFrame(tick);
+  };
+  requestAnimationFrame(tick);
 }
 
 function renderTable() {
@@ -538,8 +869,9 @@ function toast(text, warn = false, ms = warn ? 4000 : 2200) {
   const t = $('#toast');
   t.textContent = text;
   t.classList.toggle('warn', warn);
+  t.classList.add('show');
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => (t.textContent = ''), ms);
+  toastTimer = setTimeout(() => t.classList.remove('show'), ms);
 }
 
 // ---- Actions, from buttons and keys ----
@@ -571,8 +903,10 @@ const actions = {
     if (get('train_dir')) {
       set('train_hint', +!get('train_hint'));
       changed();
-    } else {
+    } else if (w.cw_train_replay() & PLAY) {
       play(str(w.cw_train_target()), 200); // hear it again
+    } else {
+      toast(`No listens left at level ${get('train_level')}: type what you heard`, true);
     }
   },
   setup() {
@@ -580,6 +914,9 @@ const actions = {
     releaseAll();
     w.cw_train_setup();
   },
+  resume: () => train(w.cw_train_resume()),
+  mic: () => useSource(MIC),
+  demo: () => useSource(DEMO),
   clear: () => log().replaceChildren(),
   'sens+': () => step('rx_sens', 1, (v) => `Sensitivity ${v}`),
   'sens-': () => step('rx_sens', -1, (v) => `Sensitivity ${v}`),
@@ -609,6 +946,7 @@ const actions = {
   settings: () => $('#settings-dialog').showModal(),
   help: () => $('#help-dialog').showModal(),
   test: () => play('VVV', 50),
+  training: () => setMode('train'),
 };
 
 const RX_KEYS = {
@@ -629,6 +967,7 @@ function shortcut(e) {
   if (e.key === 'Escape' && mode === 'train') return 'setup';
   if (e.key === 'Tab' && (view === 'train-copy' || view === 'train-send')) return 'tab';
   if (field) return null;
+  if (view === 'stats' && e.key === 'p') return 'training';
   if (e.key === 'Backspace') return 'backspace';
   if (mode === 'rx' || mode === 'trx') return RX_KEYS[e.key] ?? (mode === 'rx' ? RX_ARROWS[e.key] : null);
   return null;
@@ -723,18 +1062,45 @@ $('#wf').addEventListener('pointerdown', (e) => {
   changed();
 });
 
-$('#source').addEventListener('change', (e) => {
-  source = +e.target.value;
-  listen();
-  save();
+$('#source').addEventListener('click', (e) => {
+  const button = e.target.closest('button');
+  if (button) useSource(+button.dataset.value);
 });
 
 for (const control of $$('[data-key]')) {
+  if (control.classList.contains('seg')) {
+    control.addEventListener('click', (e) => {
+      const button = e.target.closest('button');
+      if (!button) return;
+      set(control.dataset.key, +button.dataset.value);
+      changed();
+    });
+    continue;
+  }
   control.addEventListener(control.type === 'range' ? 'input' : 'change', () => {
     set(control.dataset.key, control.type === 'checkbox' ? +control.checked : +control.value);
     changed();
   });
 }
+
+// The receiver's tuning drawer: open on wide screens, remembered once toggled.
+function openTuning(open) {
+  $('#tuning').classList.toggle('open', open);
+  $('#tuning-toggle').setAttribute('aria-expanded', open);
+}
+$('#tuning-toggle').addEventListener('click', () => {
+  const open = !$('#tuning').classList.contains('open');
+  openTuning(open);
+  try {
+    localStorage['cwtty-tuning'] = +open;
+  } catch {}
+});
+try {
+  openTuning(localStorage['cwtty-tuning'] ? localStorage['cwtty-tuning'] === '1' : matchMedia('(min-width: 40rem)').matches);
+} catch {
+  openTuning(false);
+}
+new ResizeObserver(moveIndicator).observe($('nav'));
 
 // ---- Start ----
 
@@ -758,9 +1124,15 @@ $('#table').append(
     return section;
   }));
 
+try {
+  loadStats(localStorage[STATS_KEY]);
+} catch {}
+// Another tab of the app saved: carry on from its statistics.
+addEventListener('storage', (e) => e.key === STATS_KEY && loadStats(e.newValue));
+
 const saved = restore();
 source = saved.source ?? MIC;
-$('#source').value = source;
+segment($('#source'), source);
 new ResizeObserver(resize).observe($('#wf'));
 for (const canvas of $$('#tape, .lanes canvas')) new ResizeObserver(resize).observe(canvas);
 

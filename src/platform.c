@@ -123,3 +123,54 @@ int plat_config_path(char *buf, size_t cap)
 }
 
 #endif
+
+void plat_local_date(int *year, int *month, int *mday)
+{
+    time_t now = time(NULL);
+    struct tm tm;
+#ifdef _WIN32
+    localtime_s(&tm, &now);
+#else
+    localtime_r(&now, &tm);
+#endif
+    *year = tm.tm_year + 1900;
+    *month = tm.tm_mon + 1;
+    *mday = tm.tm_mday;
+}
+
+int plat_read_file(const char *path, char *buf, size_t cap)
+{
+    FILE *f = fopen(path, "rb");
+    size_t n;
+    if (!f || cap == 0) {
+        if (f)
+            fclose(f);
+        return -1;
+    }
+    n = fread(buf, 1, cap - 1, f);
+    buf[n] = 0;
+    fclose(f);
+    return (int)n;
+}
+
+int plat_write_file(const char *path, const char *data, size_t len)
+{
+    char tmp[1100];
+    FILE *f;
+    int ok;
+    if ((size_t)snprintf(tmp, sizeof tmp, "%s.tmp", path) >= sizeof tmp)
+        return -1;
+    f = fopen(tmp, "wb");
+    if (!f)
+        return -1;
+    ok = fwrite(data, 1, len, f) == len;
+    ok = fclose(f) == 0 && ok;
+#ifdef _WIN32
+    ok = ok && MoveFileExA(tmp, path, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
+#else
+    ok = ok && rename(tmp, path) == 0;
+#endif
+    if (!ok)
+        remove(tmp);
+    return ok ? 0 : -1;
+}

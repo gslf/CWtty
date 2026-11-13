@@ -15,7 +15,7 @@ OUT     ?= ../build-web
 OBJ     ?= ../build-wasm
 PORT    ?= 8000
 
-CORE   = util morse keyer engine dsp decoder wordlists demo settings training
+CORE   = util morse keyer engine dsp decoder wordlists demo settings stats training
 OBJS   = $(patsubst %,$(OBJ)/%.o,$(CORE) page worklet libc)
 HDRS   = $(wildcard ../src/*.h wasm/libc/*.h)
 STATIC = index.html style.css app.js audio.js worklet.js install.js sw.js manifest.webmanifest \

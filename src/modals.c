@@ -37,12 +37,13 @@ static const menu_item MENU[] = {
     {'r', "Receive", "Decode CW from the microphone", MODE_RX},
     {'x', "Transceiver", "Listen, break in to transmit", MODE_TRX},
     {'p', "Training", "Practice copying and sending", MODE_TRAIN},
+    {'i', "Statistics", "Training records and progress", MODE_STATS},
     {'m', "Morse table", "Floating reference, keeps running", -1},
     {'s', "Settings", "Tone, speed, keyer, receiver, audio", -1},
     {'h', "Help", "Keys and tips", -1},
     {'q', "Quit", "also C-x C-c", -1},
 };
-#define MENU_TOOLS 4 /* index of the first tool */
+#define MENU_TOOLS 5 /* index of the first tool */
 
 static void menu_run(app_t *a, int i)
 {
@@ -513,11 +514,24 @@ static const char *const HELP[] = {
     "Enter\tStart a session, check an answer, next item",
     "\tEach typed or decoded character is checked.",
     "\tA wrong character restarts the same item.",
+    "Level\tCopy: how many times an item can be heard,",
+    "\t4 at level 1 down to 1 at level 4. Out of",
+    "\tlistens, a wrong answer shows the item.",
+    "Records\tThe best streak of correct answers, one per",
+    "\tcopy level and one for send, kept across",
+    "\tsessions: beat it for a NEW RECORD.",
     "C-x C-p\tInterrupt the session and open training setup",
     "C-r\tPlay the item again (copy)",
     "Tab\tShow or hide the pattern hint (send)",
     "Bksp\tStart the item again (send)",
     "Esc\tBack to the session setup",
+    "",
+    "#STATISTICS  (C-x i)",
+    "\tRecords, answers, accuracy, time, listens,",
+    "\tsending speed, days practised, the last four",
+    "\tweeks and how well each character goes. Saved",
+    "\tnext to the settings, in cwtty.stats.",
+    "↑↓\tScroll",
     "",
     "#TIPS",
     "\tFor exact keying use a terminal that supports the",

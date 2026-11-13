@@ -838,6 +838,141 @@ static void test_copy_training(void)
     }
 }
 
+static void test_copy_levels(void)
+{
+    static app_t a;
+    static stats_t st;
+    key_event replay = {'r', MOD_CTRL, EV_PRESS, 0};
+    key_event enter = {KEY_ENTER, 0, EV_PRESS, 0};
+    int level, k;
+    printf("copy training: listens per level, out of listens shows the answer\n");
+    for (level = 1; level <= 4; level++) {
+        training_copy_init(&a, "HEY");
+        a.cfg.train_level = level;
+        a.tr.listens = 1; /* the first play */
+        CHECK(training_max_listens(&a.cfg) == 5 - level, "level %d allows %d listens", level,
+              training_max_listens(&a.cfg));
+        for (k = 1; k < 5 - level; k++) {
+            train_key(&a, &replay);
+            CHECK(a.tr.listens == k + 1, "level %d replay %d not counted", level, k);
+        }
+        train_key(&a, &replay);
+        CHECK(a.tr.listens == 5 - level && a.toast_warn && strstr(a.toast, "No listens left"),
+              "level %d allowed a listen too many", level);
+        copy_type(&a, 'X');
+        CHECK(a.tr.state == TS_RESULT && !a.tr.ok && strcmp(a.tr.typed, "X") == 0 && a.tr.total == 1,
+              "level %d: a wrong answer without listens left did not show the result", level);
+        train_key(&a, &replay);
+        CHECK(a.tr.listens == 5 - level, "the result's replay was counted");
+        train_key(&a, &enter);
+        CHECK(a.tr.state == TS_LISTEN && a.tr.listens == 1 && a.tr.typed[0] == 0, "Enter did not start a new item");
+    }
+    /* A wrong answer with listens left plays the item again, as a listen. */
+    training_copy_init(&a, "HEY");
+    a.cfg.train_level = 3;
+    a.tr.listens = 1;
+    copy_type(&a, 'X');
+    CHECK(a.tr.state == TS_LISTEN && a.tr.listens == 2 && a.tr.total == 1, "the automatic replay was not a listen");
+    copy_type(&a, 'X');
+    CHECK(a.tr.state == TS_RESULT && !a.tr.ok, "level 3 allowed a third listen");
+
+    /* Records and statistics. */
+    printf("training records: per copy level and for send, NEW RECORD\n");
+    stats_reset(&st);
+    training_copy_init(&a, "HEY");
+    a.tr.stats = &st;
+    a.cfg.train_level = 2;
+    a.cfg.wpm = 22;
+    a.tr.listens = 1;
+    training_clock(&a.tr, 1000.0, 20000);
+    copy_type(&a, 'H');
+    copy_type(&a, 'E');
+    copy_type(&a, 'Y');
+    CHECK(a.tr.rec_hit && st.copy_rec[1].value == 1 && st.copy_rec[1].wpm == 22 && st.copy_rec[1].day == 20000 &&
+              st.copy_rec[0].value == 0 && st.send_rec.value == 0,
+          "the first correct answer did not set the level 2 record");
+    CHECK(st.dir[STATS_COPY].answers == 1 && st.dir[STATS_COPY].correct == 1 && st.dir[STATS_COPY].sessions == 1 &&
+              st.copy_items == 1 && st.copy_first == 1 && st.copy_listens == 1 && st.days == 1 &&
+              st.dir[STATS_COPY].seen['H'] == 1 && st.dir[STATS_COPY].miss['H'] == 0,
+          "the copied item was not counted");
+    a.tr.state = TS_LISTEN;
+    a.tr.typed[0] = 0;
+    a.tr.ntyped = 0;
+    a.tr.listens = 1;
+    copy_type(&a, 'X');
+    CHECK(!a.tr.rec_hit && a.tr.streak == 0 && st.copy_rec[1].value == 1 && st.dir[STATS_COPY].miss['H'] == 1,
+          "a wrong answer touched the record");
+    copy_type(&a, 'H');
+    copy_type(&a, 'E');
+    copy_type(&a, 'Y');
+    CHECK(!a.tr.rec_hit && a.tr.streak == 1 && st.copy_items == 2 && st.copy_first == 1 && st.copy_listens == 3,
+          "equalling the record is not a new record");
+    a.cfg.train_level = 1;
+    CHECK(training_record(&a.tr, &a.cfg) == 0, "the level 1 record was shared with level 2");
+}
+
+static void test_stats(void)
+{
+    static stats_t s, t;
+    static char text[STATS_TEXT_CAP];
+    char weak[4];
+    int y, m, d, n;
+    printf("statistics: text form, days, activity, weak characters\n");
+    CHECK(stats_day(1970, 1, 1) == 0 && stats_day(2026, 11, 13) == 20770, "day numbers");
+    stats_date(20770, &y, &m, &d);
+    CHECK(y == 2026 && m == 11 && d == 13, "date of day 20770: %d-%d-%d", y, m, d);
+    stats_date(stats_day(2024, 2, 29), &y, &m, &d);
+    CHECK(y == 2024 && m == 2 && d == 29, "leap day round trip");
+
+    stats_reset(&s);
+    stats_answer(&s, STATS_COPY, 1, 1500, 100);
+    stats_answer(&s, STATS_COPY, 0, 900000, 100); /* idle time is capped */
+    stats_answer(&s, STATS_SEND, 1, 2000, 101);
+    CHECK(s.days == 2 && s.day_streak == 2 && s.best_day_streak == 2 && s.first_day == 100 && s.last_day == 101,
+          "consecutive days");
+    CHECK(s.dir[STATS_COPY].seconds + s.dir[STATS_SEND].seconds == 63, "time: %d s",
+          s.dir[STATS_COPY].seconds + s.dir[STATS_SEND].seconds);
+    CHECK(stats_activity(&s, 101, 0) == 1 && stats_activity(&s, 101, 1) == 2 && stats_activity(&s, 103, 2) == 1,
+          "activity per day");
+    CHECK(stats_day_streak(&s, 102) == 2 && stats_day_streak(&s, 103) == 0, "a skipped day ends the streak");
+    stats_answer(&s, STATS_COPY, 1, 0, 140);
+    CHECK(s.days == 3 && s.day_streak == 1 && s.best_day_streak == 2 && stats_activity(&s, 140, 39) == 0 &&
+              stats_activity(&s, 140, 0) == 1,
+          "a long pause");
+    stats_char(&s, STATS_COPY, 'Q', 1);
+    stats_char(&s, STATS_COPY, 'Q', 1);
+    stats_char(&s, STATS_COPY, 'E', 0);
+    stats_char(&s, STATS_COPY, 'K', 1);
+    for (n = 0; n < 9; n++)
+        stats_char(&s, STATS_COPY, 'K', 0);
+    stats_char(&s, STATS_SEND, '=', 1);
+    n = stats_weak(&s, STATS_COPY, weak, 4);
+    CHECK(n == 2 && weak[0] == 'Q' && weak[1] == 'K' && stats_char_pct(&s, STATS_COPY, 'K') == 90 &&
+              stats_char_pct(&s, STATS_COPY, 'Z') == -1,
+          "weak characters");
+    CHECK(stats_streak(&s, STATS_COPY, 3, 5, 18, 140) && !stats_streak(&s, STATS_COPY, 3, 5, 18, 140) &&
+              stats_streak(&s, STATS_SEND, 0, 2, 25, 140),
+          "records");
+    s.send_best10 = 223;
+
+    n = stats_format(&s, text, (int)sizeof text);
+    CHECK(n > 0 && (int)strlen(text) == n, "format");
+    stats_parse(&t, text);
+    t.ms_rest = s.ms_rest;
+    CHECK(memcmp(&s, &t, sizeof s) == 0, "text round trip lost something");
+    CHECK(stats_format(&s, text, 64) == -1 && strlen(text) == 63, "a short buffer was not reported");
+    stats_parse(&t, "# comment\ncopy_answers=12\ncopy_correct=40\nunknown=3\nkoch=x\nsend_chars=3D:4:9 zz\n"
+                    "activity=1 2 -");
+    CHECK(t.dir[STATS_COPY].answers == 12 && t.dir[STATS_COPY].correct == 12 && t.koch == 0 &&
+              t.dir[STATS_SEND].seen['='] == 4 && t.dir[STATS_SEND].miss['='] == 4 && t.act[0] == 1 &&
+              t.act[1] == 2 && t.act[2] == 0,
+          "parsing damaged text");
+    {
+        int *f = stats_field(&t, "copy_record_3_wpm");
+        CHECK(f == &t.copy_rec[2].wpm && stats_field(&t, "nope") == NULL, "fields by key");
+    }
+}
+
 static void test_training_table_footer(void)
 {
     static app_t a;
@@ -1143,6 +1278,8 @@ int main(void)
     test_training_menu();
     test_copy_training_characters();
     test_copy_training();
+    test_copy_levels();
+    test_stats();
     test_training_table_footer();
     test_morse_table();
     test_keyer();

@@ -47,6 +47,7 @@ void settings_defaults(settings_t *s)
     s->train_group = 1;
     s->train_hint = 1;
     s->train_strict = 0;
+    s->train_level = 1;
 }
 
 int rx_bw_index(int hz)
@@ -86,6 +87,7 @@ void settings_clamp(settings_t *s)
     s->train_group = clampi(s->train_group, 1, 5);
     s->train_hint = !!s->train_hint;
     s->train_strict = !!s->train_strict;
+    s->train_level = clampi(s->train_level, 1, 4);
 }
 
 typedef struct {
@@ -104,7 +106,7 @@ static const field_t FIELDS[] = {
     F_INT(rx_lock),       F_INT(breakin_ms),    F_INT(trx_sidetone),  F_INT(latency_ms),
     F_STR(out_dev),       F_STR(in_dev),        F_INT(train_dir),     F_INT(train_content),
     F_INT(train_charset), F_INT(train_koch),    F_INT(train_group),   F_INT(train_hint),
-    F_INT(train_strict),  F_INT(key_input),
+    F_INT(train_strict),  F_INT(key_input),     F_INT(train_level),
 };
 
 static const field_t *find_field(const char *key)

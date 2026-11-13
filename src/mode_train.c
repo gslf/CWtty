@@ -31,6 +31,8 @@ static void train_do(app_t *a, int fx)
         audio_stop_playback();
         audio_play_text(a->tr.target, a->cfg.wpm, a->cfg.farnsworth, 350.0);
     }
+    if (fx & TRAIN_CHECKED)
+        app_save_stats(a);
 }
 
 /* ------------------------------------------------------------------------ */
@@ -67,7 +69,8 @@ void train_on_sent(app_t *a, const dec_token *tok)
 /* Setup form                                                                */
 /* ------------------------------------------------------------------------ */
 
-enum { ROW_DIR, ROW_CONTENT, ROW_CHARSET, ROW_KOCH, ROW_GROUP, ROW_HINT, ROW_SPACING, ROW_START };
+enum { ROW_DIR, ROW_CONTENT, ROW_CHARSET, ROW_KOCH, ROW_GROUP, ROW_LEVEL, ROW_HINT, ROW_SPACING, ROW_START };
+#define MAX_ROWS 10
 
 static int setup_rows(const app_t *a, int *rows)
 {
@@ -80,6 +83,8 @@ static int setup_rows(const app_t *a, int *rows)
             rows[n++] = ROW_KOCH;
         rows[n++] = ROW_GROUP;
     }
+    if (a->cfg.train_dir == TRAIN_COPY)
+        rows[n++] = ROW_LEVEL;
     if (a->cfg.train_dir == TRAIN_SEND) {
         rows[n++] = ROW_HINT;
         rows[n++] = ROW_SPACING;
@@ -97,6 +102,7 @@ static void setup_change(app_t *a, int row, int delta)
     case ROW_CHARSET: c->train_charset = (c->train_charset + 6 + delta) % 6; break;
     case ROW_KOCH: c->train_koch = clampi(c->train_koch + delta, 2, (int)strlen(KOCH_ORDER)); break;
     case ROW_GROUP: c->train_group = clampi(c->train_group + delta, 1, 5); break;
+    case ROW_LEVEL: c->train_level = clampi(c->train_level + delta, 1, STATS_LEVELS); break;
     case ROW_HINT: c->train_hint = !c->train_hint; break;
     case ROW_SPACING: c->train_strict = !c->train_strict; break;
     default: return;
@@ -110,15 +116,43 @@ static void start_session(app_t *a)
     app_refresh_operator(a);
 }
 
+/* The records to beat: one per copy level, one for send. */
+static void render_records(app_t *a, int x, int y, int w)
+{
+    const settings_t *c = &a->cfg;
+    char buf[64];
+    int lv;
+    x += scr_text(x, y, c->train_dir == TRAIN_COPY ? "RECORDS" : "RECORD", TH_FG_FAINT, COLOR_KEEP, A_BOLD) + 2;
+    if (c->train_dir == TRAIN_SEND) {
+        const stats_record *r = stats_record_of(&a->stats, TRAIN_SEND, 0);
+        snprintf(buf, sizeof buf, "%d", r->value);
+        x += scr_text(x, y, r->value ? buf : "none yet", r->value ? TH_ACCENT : TH_FG_MUTED, COLOR_KEEP, A_BOLD) + 1;
+        if (r->value)
+            scr_text(x, y, r->value == 1 ? "correct answer in a row" : "correct answers in a row", TH_FG_MUTED,
+                     COLOR_KEEP, 0);
+        return;
+    }
+    for (lv = 1; lv <= STATS_LEVELS && x < w; lv++) {
+        const stats_record *r = stats_record_of(&a->stats, TRAIN_COPY, lv);
+        int cur = lv == c->train_level;
+        snprintf(buf, sizeof buf, "L%d ", lv);
+        x += scr_text(x, y, buf, cur ? TH_FG : TH_FG_FAINT, COLOR_KEEP, 0);
+        snprintf(buf, sizeof buf, "%d", r->value);
+        x += scr_text(x, y, r->value ? buf : "–", cur ? TH_ACCENT : TH_FG_MUTED, COLOR_KEEP, A_BOLD) + 3;
+    }
+    if (x + 26 < w)
+        scr_text(x, y, "best streaks  ·  C-x i stats", TH_FG_FAINT, COLOR_KEEP, 0);
+}
+
 static void render_setup(app_t *a, rect_t r)
 {
-    int rows[8], n = setup_rows(a, rows), i, y;
+    int rows[MAX_ROWS], n = setup_rows(a, rows), i, y;
     int fw = mini(r.w - 4, 76), fx = r.x + (r.w - fw) / 2;
     char val[96], set[96];
     const settings_t *c = &a->cfg;
 
     ui_panel(r, "Training", "set up a session", 0);
-    y = r.y + maxi(2, (r.h - (n + 12)) / 2);
+    y = r.y + maxi(2, (r.h - (n + 14)) / 2);
     scr_text(fx, y, c->train_dir == TRAIN_COPY ? "Copy by ear: CWtty sends, you type what you hear."
                                                : "Send: CWtty shows the text, you key it with Space or the paddles.",
              TH_FG_MUTED, COLOR_KEEP, A_ITALIC);
@@ -161,6 +195,11 @@ static void render_setup(app_t *a, rect_t r)
             label = "Group size";
             snprintf(val, sizeof val, "%d", c->train_group);
             break;
+        case ROW_LEVEL:
+            label = "Level";
+            snprintf(val, sizeof val, "%d  ·  %d %s", c->train_level, training_max_listens(c),
+                     training_max_listens(c) == 1 ? "listen" : "listens");
+            break;
         case ROW_HINT:
             label = "Pattern hint";
             str_copy(val, sizeof val, c->train_hint ? "Shown" : "Hidden");
@@ -191,6 +230,10 @@ static void render_setup(app_t *a, rect_t r)
     }
 
     y += 1;
+    if (y < r.y + r.h - 1) {
+        render_records(a, fx, y, fx + fw);
+        y += 2;
+    }
     {
         static const char *const about[] = {
             ("The Koch method plays every character at full speed from day one. Start with two and add "
@@ -299,7 +342,13 @@ static void render_stats(app_t *a, rect_t r)
     if (t->total > 0) {
         snprintf(buf, sizeof buf, "%d/%d  %d%%  streak %d  best %d", t->correct, t->total,
                  t->correct * 100 / t->total, t->streak, t->best);
-        x += scr_text(x, r.y, buf, TH_FG_MUTED, COLOR_KEEP, 0) + 3;
+        x += scr_text(x, r.y, buf, TH_FG_MUTED, COLOR_KEEP, 0) + 2;
+    }
+    if (t->stats && x + 12 < r.x + r.w) {
+        int rec = training_record(t, &a->cfg);
+        snprintf(buf, sizeof buf, "%d", rec);
+        x += scr_text(x, r.y, "record ", TH_FG_FAINT, COLOR_KEEP, 0);
+        x += scr_text(x, r.y, rec ? buf : "–", t->rec_hit ? TH_ACCENT_HI : TH_ACCENT, COLOR_KEEP, A_BOLD) + 3;
     }
     /* The characters you miss most. */
     nw = training_weak(t, worst, (int)sizeof worst);
@@ -310,6 +359,36 @@ static void render_stats(app_t *a, rect_t r)
             x += 2;
         }
     }
+}
+
+/* The banner of a new record: big if there is room, else one line. Returns
+ * the rows used, 0 when the last answer set no record. */
+static int new_record(app_t *a, rect_t in, int y, int room)
+{
+    static const char *const big = "NEW RECORD";
+    char buf[64];
+    if (!a->tr.rec_hit)
+        return 0;
+    if (room >= BIGFONT_ROWS + 1 && bigfont_width(big) <= in.w - 2) {
+        bigfont_draw(in.x + (in.w - bigfont_width(big)) / 2, y, big, app_blink(a, 400) ? TH_ACCENT : TH_ACCENT_HI,
+                     COLOR_KEEP);
+        return BIGFONT_ROWS + 1;
+    }
+    snprintf(buf, sizeof buf, "★  NEW RECORD  ·  %d in a row  ★", a->tr.streak);
+    centered(in, y, buf, TH_ACCENT, A_BOLD);
+    return 2;
+}
+
+/* Listens of the item: used ones lit, "● ● ○ ○  listen 2 of 4". */
+static void render_listens(app_t *a, rect_t in, int y)
+{
+    int max = training_max_listens(&a->cfg), used = mini(a->tr.listens, max), i, x;
+    char buf[48];
+    snprintf(buf, sizeof buf, "listen %d of %d", used, max);
+    x = in.x + (in.w - (max * 2 + 1 + utf8_width(buf))) / 2;
+    for (i = 0; i < max; i++, x += 2)
+        scr_put(x, y, i < used ? 0x25CF : 0x25CB, i < used ? TH_ACCENT : TH_FG_FAINT, COLOR_KEEP, 0);
+    scr_text(x + 1, y, buf, used >= max ? TH_WARN : TH_FG_MUTED, COLOR_KEEP, 0);
 }
 
 static void render_copy(app_t *a, rect_t in)
@@ -323,18 +402,24 @@ static void render_copy(app_t *a, rect_t in)
         snprintf(buf, sizeof buf, "%s%.*s", audio_playback_busy() ? "Listen" : "Type what you heard",
                  audio_playback_busy() ? dots : 0, "...");
         centered(in, y, buf, TH_FG_MUTED, 0);
-        y += 2;
+        render_listens(a, in, y + 1);
+        y += 3;
         if (t->typed[0])
             big_or_small(in, y, t->typed, TH_ACCENT);
         else
             centered(in, y + 1, app_blink(a, 530) ? "▁" : " ", TH_ACCENT, 0);
         y += BIGFONT_ROWS + 2;
-        centered(in, y, "Each character is checked  ·  C-r to hear it again", TH_FG_FAINT, 0);
+        centered(in, y,
+                 t->listens < training_max_listens(&a->cfg) ? "Each character is checked  ·  C-r to hear it again"
+                                                            : "Each character is checked  ·  no listens left",
+                 TH_FG_FAINT, 0);
         return;
     }
 
-    /* Result. */
-    centered(in, y, t->ok ? "● Correct" : "▲ Not quite", t->ok ? TH_OK : TH_ERR, A_BOLD);
+    /* Result, with the banner of a new record above it if there is room. */
+    y = in.y + maxi(0, (in.h - (t->rec_hit ? 17 : 12)) / 2);
+    y += new_record(a, in, y, in.h - 12);
+    centered(in, y, t->ok ? "● Correct" : "▲ Not quite  ·  no listens left", t->ok ? TH_OK : TH_ERR, A_BOLD);
     y += 2;
     big_or_small(in, y, t->target, t->ok ? TH_OK : TH_ACCENT);
     y += BIGFONT_ROWS + 1;
@@ -354,11 +439,21 @@ static void render_copy(app_t *a, rect_t in)
 static void render_send(app_t *a, rect_t in)
 {
     training_t *t = &a->tr;
-    int y = in.y + maxi(0, (in.h - 11) / 2);
+    int banner = t->state == TS_SEND_RESULT && t->rec_hit;
+    int y = in.y + maxi(0, (in.h - (banner ? 16 : 11)) / 2);
     char buf[160];
 
-    centered(in, y, t->state == TS_SEND ? "Send" : (t->ok ? "● Correct" : "▲ Not quite"),
-             t->state == TS_SEND ? TH_FG_MUTED : (t->ok ? TH_OK : TH_ERR), t->state == TS_SEND ? 0 : A_BOLD);
+    /* A new record: the banner, big above everything if there is room,
+     * else in place of the "Correct" line. */
+    if (banner && in.h >= 16) {
+        y += new_record(a, in, y, in.h - 11);
+        banner = 0;
+    }
+    if (banner)
+        new_record(a, in, y, 0);
+    else
+        centered(in, y, t->state == TS_SEND ? "Send" : (t->ok ? "● Correct" : "▲ Not quite"),
+                 t->state == TS_SEND ? TH_FG_MUTED : (t->ok ? TH_OK : TH_ERR), t->state == TS_SEND ? 0 : A_BOLD);
     y += 2;
     big_or_small(in, y, t->target, t->state == TS_SEND_RESULT && t->ok ? TH_OK : TH_FG);
     y += BIGFONT_ROWS + 1;
@@ -398,13 +493,19 @@ void train_render(app_t *a, rect_t r)
         render_setup(a, r);
         return;
     }
-    if (a->cfg.train_content == TRAIN_CHARS && a->cfg.train_charset == CHARSET_KOCH)
-        snprintf(title, sizeof title, "Training  %s  Koch %d", a->cfg.train_dir == TRAIN_COPY ? "copy" : "send",
-                 a->cfg.train_koch);
-    else
-        snprintf(title, sizeof title, "Training  %s  %s", a->cfg.train_dir == TRAIN_COPY ? "copy" : "send",
-                 a->cfg.train_content == TRAIN_CHARS ? TRAIN_CHARSET_NAMES[a->cfg.train_charset]
-                                                     : TRAIN_CONTENT_NAMES[a->cfg.train_content]);
+    {
+        char what[64];
+        if (a->cfg.train_content == TRAIN_CHARS && a->cfg.train_charset == CHARSET_KOCH)
+            snprintf(what, sizeof what, "Koch %d", a->cfg.train_koch);
+        else
+            str_copy(what, sizeof what,
+                     a->cfg.train_content == TRAIN_CHARS ? TRAIN_CHARSET_NAMES[a->cfg.train_charset]
+                                                         : TRAIN_CONTENT_NAMES[a->cfg.train_content]);
+        if (a->cfg.train_dir == TRAIN_COPY)
+            snprintf(title, sizeof title, "Training  copy  %s  level %d", what, a->cfg.train_level);
+        else
+            snprintf(title, sizeof title, "Training  send  %s", what);
+    }
     if (a->cfg.train_dir == TRAIN_SEND)
         snprintf(info, sizeof info, "%s  ·  score %d/%d", a->cfg.train_strict ? "strict" : "relaxed",
                  t->correct, t->total);
@@ -433,7 +534,7 @@ int train_key(app_t *a, const key_event *ev)
     training_t *t = &a->tr;
 
     if (t->state == TS_SETUP) {
-        int rows[8], n = setup_rows(a, rows);
+        int rows[MAX_ROWS], n = setup_rows(a, rows);
         t->sel = clampi(t->sel, 0, n - 1);
         if (ev->mods & (MOD_CTRL | MOD_ALT))
             return 0;
@@ -459,8 +560,12 @@ int train_key(app_t *a, const key_event *ev)
 
     if (a->cfg.train_dir == TRAIN_COPY) {
         if ((ev->mods & MOD_CTRL) && ev->key == 'r') {
-            audio_stop_playback();
-            audio_play_text(t->target, a->cfg.wpm, a->cfg.farnsworth, 200.0);
+            if (training_replay(t, &a->cfg) & TRAIN_PLAY) {
+                audio_stop_playback();
+                audio_play_text(t->target, a->cfg.wpm, a->cfg.farnsworth, 200.0);
+            } else if (t->state == TS_LISTEN) {
+                app_toast(a, 1, "No listens left at level %d: type what you heard", a->cfg.train_level);
+            }
             return 1;
         }
         if (ev->mods & (MOD_CTRL | MOD_ALT))

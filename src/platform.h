@@ -25,4 +25,14 @@ uint32_t plat_entropy(void);
  */
 int plat_config_path(char *buf, size_t cap);
 
+/* Today's local date. */
+void plat_local_date(int *year, int *month, int *mday);
+
+/* Reads a whole file into buf (NUL-terminated). Returns its length or -1. */
+int plat_read_file(const char *path, char *buf, size_t cap);
+
+/* Replaces a file with data: written aside, then renamed over it, so that
+ * a crash never leaves it half written. Returns 0 on success. */
+int plat_write_file(const char *path, const char *data, size_t len);
+
 #endif

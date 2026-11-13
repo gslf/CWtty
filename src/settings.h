@@ -46,6 +46,7 @@ typedef struct {
     int train_group;
     int train_hint;
     int train_strict; /* require word spacing; 0 allows pauses between letters */
+    int train_level;  /* copy: 1..4, the item can be heard 5 - level times */
 } settings_t;
 
 /* Receiver filter bandwidths offered in the UI. */

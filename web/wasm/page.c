@@ -3,7 +3,8 @@
  * the decoders of both directions, the receiver, the transceiver's
  * break-in and the training sessions. It mirrors src/app.c and
  * src/mode_trx.c without the terminal; the page feeds it with what the
- * worklet reports and draws what it exposes.
+ * worklet reports and draws what it exposes. The training statistics are
+ * kept here too; the page stores their text form in the browser.
  */
 #include <string.h>
 
@@ -13,6 +14,7 @@
 #include "keyer.h"
 #include "morse.h"
 #include "settings.h"
+#include "stats.h"
 #include "training.h"
 #include "util.h"
 #include "wordlists.h"
@@ -45,6 +47,10 @@ static int        applied_valid;
 static cw_decoder txdec, rxdec;
 static rx_dsp     dsp;
 static training_t tr;
+static stats_t    stats;
+static char       stats_text[STATS_TEXT_CAP];
+static int        today;
+static int        resume_state = TS_SETUP; /* the session the setup interrupted */
 
 static int    mode, source, ptt;
 static double rx_last_char_ms, demo_at;
@@ -148,6 +154,8 @@ EXPORT void cw_init(unsigned seed)
     dec_init(&rxdec, cfg.rx_wpm);
     dsp_init(&dsp, (float)cfg.rx_freq, (float)cfg.rx_bw, cfg.rx_sens);
     demo_init();
+    stats_reset(&stats);
+    tr.stats = &stats;
     applied_valid = 0;
     apply();
 }
@@ -171,6 +179,9 @@ EXPORT int cw_set(const char *key, int value)
     int *p = settings_field(&cfg, key);
     if (!p)
         return -1;
+    /* A different session: the interrupted one cannot be resumed. */
+    if (strncmp(key, "train_", 6) == 0 && strcmp(key, "train_hint") != 0 && *p != value)
+        resume_state = TS_SETUP;
     *p = value;
     apply();
     return *p;
@@ -180,9 +191,10 @@ EXPORT void cw_mode(int m)
 {
     if (mode == MODE_TRX && ptt)
         ptt_off();
-    /* Entering training (again) shows its setup. */
-    if (mode == MODE_TRAIN || m == MODE_TRAIN)
-        tr.state = TS_SETUP;
+    /* Training keeps its session while another mode is shown; an item
+     * being sent starts again (the decoder is cleared below). */
+    if (m == MODE_TRAIN && mode != MODE_TRAIN && tr.state == TS_SEND)
+        training_retry(&tr, &cfg);
     mode = m;
     dec_clear(&txdec);
     if (mode == MODE_TRX)
@@ -431,10 +443,35 @@ EXPORT int cw_lock_speed(void)
 /* Training                                                                  */
 /* ------------------------------------------------------------------------ */
 
-EXPORT int cw_train_enter(void) { return train_do(training_enter(&tr, &cfg, &txdec)); }
+EXPORT int cw_train_enter(void)
+{
+    if (tr.state == TS_SETUP)
+        resume_state = TS_SETUP; /* a new session */
+    return train_do(training_enter(&tr, &cfg, &txdec));
+}
 EXPORT int cw_train_type(int ch) { return train_do(training_type(&tr, &cfg, ch)); }
 EXPORT int cw_train_backspace(void) { return train_do(training_backspace(&tr, &cfg)); }
-EXPORT void cw_train_setup(void) { tr.state = TS_SETUP; }
+/* Back to the setup; the session can be resumed until a setting changes. */
+EXPORT void cw_train_setup(void)
+{
+    if (tr.state != TS_SETUP)
+        resume_state = tr.state;
+    tr.state = TS_SETUP;
+}
+
+EXPORT int cw_train_resumable(void) { return resume_state != TS_SETUP; }
+
+EXPORT int cw_train_resume(void)
+{
+    int fx = 0;
+    if (resume_state == TS_SETUP)
+        return 0;
+    tr.state = resume_state;
+    resume_state = TS_SETUP;
+    if (tr.state == TS_SEND)
+        fx = train_do(training_retry(&tr, &cfg));
+    return fx;
+}
 
 EXPORT int cw_train_state(void) { return tr.state; }
 EXPORT int cw_train_ok(void) { return tr.ok; }
@@ -470,6 +507,58 @@ EXPORT const char *cw_train_charset(void)
 EXPORT int cw_koch_max(void)
 {
     return (int)strlen(KOCH_ORDER);
+}
+
+/* The page's clock (ms) and local day number, every frame. */
+EXPORT void cw_clock(double now_ms, int day)
+{
+    today = day;
+    training_clock(&tr, now_ms, day);
+}
+
+/* Copy: another listen, TRAIN_PLAY or 0 when the level allows no more. */
+EXPORT int cw_train_replay(void) { return training_replay(&tr, &cfg); }
+EXPORT int cw_train_listens(void) { return tr.listens; }
+EXPORT int cw_train_max_listens(void) { return training_max_listens(&cfg); }
+EXPORT int cw_train_rec_hit(void) { return tr.rec_hit; }
+EXPORT int cw_train_record(void) { return training_record(&tr, &cfg); }
+
+/* ------------------------------------------------------------------------ */
+/* Statistics                                                                */
+/* ------------------------------------------------------------------------ */
+
+/* Where the page writes the stored text before cw_stats_load(). */
+EXPORT char *cw_stats_buf(void) { return stats_text; }
+EXPORT int cw_stats_cap(void) { return (int)sizeof stats_text; }
+
+EXPORT void cw_stats_load(void)
+{
+    stats_text[sizeof stats_text - 1] = 0;
+    stats_parse(&stats, stats_text);
+}
+
+/* The text to store, NULL if it does not fit. */
+EXPORT const char *cw_stats_save(void)
+{
+    return stats_format(&stats, stats_text, (int)sizeof stats_text) >= 0 ? stats_text : NULL;
+}
+
+/* An integer by its key in the text form, -1 for an unknown key. */
+EXPORT int cw_stat(const char *key)
+{
+    int *p = stats_field(&stats, key);
+    return p ? *p : -1;
+}
+
+EXPORT int cw_stat_seen(int dir, int ch) { return stats.dir[dir & 1].seen[ch & 127]; }
+EXPORT int cw_stat_pct(int dir, int ch) { return stats_char_pct(&stats, dir, ch); }
+EXPORT int cw_stat_activity(int ago) { return stats_activity(&stats, today, ago); }
+EXPORT int cw_stat_day_streak(void) { return stats_day_streak(&stats, today); }
+
+EXPORT const char *cw_stat_weak(int dir)
+{
+    scratch[stats_weak(&stats, dir, scratch, 6)] = 0;
+    return scratch;
 }
 
 /* ------------------------------------------------------------------------ */

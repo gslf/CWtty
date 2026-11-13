@@ -35,6 +35,7 @@ int home_key(app_t *a, const key_event *ev)
     case 'r': app_set_mode(a, MODE_RX); return 1;
     case 'x': app_set_mode(a, MODE_TRX); return 1;
     case 'p': app_set_mode(a, MODE_TRAIN); return 1;
+    case 'i': app_set_mode(a, MODE_STATS); return 1;
     case 'm': app_open_modal(a, MODAL_TABLE); return 1;
     case 's': app_open_modal(a, MODAL_SETTINGS); return 1;
     case 'h':
