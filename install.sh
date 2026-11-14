@@ -57,7 +57,7 @@ if [ $uninstall = 1 ]; then
     else
         say "cwtty is not installed in $bindir"
     fi
-    say "Your settings are still in $config (delete it by hand if you want)."
+    say "Your settings, statistics and Filen session are still in $config (delete it by hand if you want)."
     exit 0
 fi
 

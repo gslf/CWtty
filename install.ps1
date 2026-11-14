@@ -64,7 +64,7 @@ function Install-CWtty([string]$Version, [string]$Prefix, [switch]$Uninstall) {
             Set-UserPath ($kept -join ';')
             Write-Host "Removed $Prefix from your PATH"
         }
-        Write-Host "Your settings are still in $env:APPDATA\cwtty (delete it by hand if you want)."
+        Write-Host "Your settings, statistics and Filen session are still in $env:APPDATA\cwtty (delete it by hand if you want)."
         return
     }
 

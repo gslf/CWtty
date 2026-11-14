@@ -102,6 +102,8 @@ jobs:
           path: dist
           merge-multiple: true
 
+      # A release made by hand on GitHub (with the tag) keeps its title and
+      # notes: the binaries are added to it.
       - name: Create the release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -109,6 +111,10 @@ jobs:
           cd dist
           sha256sum cwtty-* > SHA256SUMS
           cat SHA256SUMS
-          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
-            --title "CWtty ${GITHUB_REF_NAME#v}" --generate-notes \
-            cwtty-* SHA256SUMS
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --clobber cwtty-* SHA256SUMS
+          else
+            gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+              --title "CWtty ${GITHUB_REF_NAME#v}" --generate-notes \
+              cwtty-* SHA256SUMS
+          fi

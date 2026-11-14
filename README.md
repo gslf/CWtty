@@ -101,7 +101,7 @@ The Filen client is tested offline against a fake server (`test_filen`), and its
 
 ### Releasing
 
-Set the new `VERSION` in `CMakeLists.txt`, commit, then run `make release`: it runs the tests, tags `vX.Y.Z` and pushes the tag. The [release workflow](.github/workflows/release.yml) builds the binaries for every platform and publishes them as the GitHub release that the install scripts download.
+Set the new `VERSION` in `CMakeLists.txt`, commit, then run `make release`: it runs the tests, tags `vX.Y.Z` and pushes the tag. A release made on GitHub's page works too, as long as `VERSION` already matches its tag: the binaries are added to it. The [release workflow](.github/workflows/release.yml) builds the binaries for every platform and publishes them as the GitHub release that the install scripts download.
 
 
 ## Online rooms
