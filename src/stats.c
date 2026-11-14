@@ -30,32 +30,109 @@ const stats_record *stats_record_of(const stats_t *s, int dir, int level)
 /* Counting                                                                  */
 /* ------------------------------------------------------------------------ */
 
-static void count_day(stats_t *s, int day)
+/* Day numbers past this are damage (year 29349). */
+#define DAY_MAX 10000000
+
+static int run_len(const int r[2])
+{
+    return r[1] - r[0] + 1;
+}
+
+/* The oldest days leave the list of runs but still count. */
+static void fold(stats_t *s, int len)
+{
+    s->old_days += len;
+    if (len > s->old_best)
+        s->old_best = len;
+}
+
+/* Adds the days a..b (1 <= a <= b) to the runs, joining the runs they
+ * touch. */
+static void days_insert(stats_t *s, int a, int b)
+{
+    int n = s->nranges, i = 0, j;
+    while (i < n && s->range[i][1] < a - 1)
+        i++;
+    for (j = i; j < n && s->range[j][0] <= b + 1; j++) {
+        if (s->range[j][0] < a)
+            a = s->range[j][0];
+        if (s->range[j][1] > b)
+            b = s->range[j][1];
+    }
+    if (j > i) { /* the runs i..j-1 become one */
+        s->range[i][0] = a;
+        s->range[i][1] = b;
+        memmove(s->range + i + 1, s->range + j, sizeof s->range[0] * (size_t)(n - j));
+        s->nranges = n - (j - i) + 1;
+        /* unused runs stay zero: equal statistics are equal bytes */
+        memset(s->range + s->nranges, 0, sizeof s->range[0] * (size_t)(n - s->nranges));
+        return;
+    }
+    if (n == STATS_RANGES) { /* full: the oldest run is folded */
+        if (i == 0) {
+            fold(s, b - a + 1);
+            return;
+        }
+        fold(s, run_len(s->range[0]));
+        memmove(s->range, s->range + 1, sizeof s->range[0] * (size_t)(n - 1));
+        n--;
+        i--;
+    }
+    memmove(s->range + i + 1, s->range + i, sizeof s->range[0] * (size_t)(n - i));
+    s->range[i][0] = a;
+    s->range[i][1] = b;
+    s->nranges = n + 1;
+}
+
+/* The days, the streaks and the first and last day from the runs. */
+static void days_derive(stats_t *s)
+{
+    int i, len, days = s->old_days, best = s->old_best;
+    for (i = 0; i < s->nranges; i++) {
+        len = run_len(s->range[i]);
+        days += len;
+        if (len > best)
+            best = len;
+    }
+    s->days = days;
+    s->best_day_streak = best;
+    if (s->nranges > 0) {
+        s->last_day = s->range[s->nranges - 1][1];
+        s->day_streak = run_len(s->range[s->nranges - 1]);
+        if (s->first_day <= 0 || (s->old_days == 0 && s->first_day > s->range[0][0]))
+            s->first_day = s->range[0][0];
+    } else {
+        s->last_day = s->day_streak = 0;
+        if (s->old_days == 0)
+            s->first_day = 0;
+    }
+}
+
+/* Moves the activity window to day, when newer. */
+static void act_follow(stats_t *s, int day)
 {
     int shift, i;
-    if (day <= 0)
+    if (day <= s->act_day)
         return;
-    if (day > s->last_day) {
-        s->day_streak = s->last_day > 0 && s->last_day == day - 1 ? s->day_streak + 1 : 1;
-        if (s->day_streak > s->best_day_streak)
-            s->best_day_streak = s->day_streak;
-        s->days++;
-        if (s->first_day <= 0)
-            s->first_day = day;
-        s->last_day = day;
+    shift = day - s->act_day;
+    if (s->act_day <= 0 || shift >= STATS_DAYS) {
+        memset(s->act, 0, sizeof s->act);
+    } else {
+        memmove(s->act + shift, s->act, sizeof(int) * (size_t)(STATS_DAYS - shift));
+        for (i = 0; i < shift; i++)
+            s->act[i] = 0;
     }
-    /* The activity window follows the newest day. */
-    if (day > s->act_day) {
-        shift = day - s->act_day;
-        if (s->act_day <= 0 || shift >= STATS_DAYS) {
-            memset(s->act, 0, sizeof s->act);
-        } else {
-            memmove(s->act + shift, s->act, sizeof(int) * (size_t)(STATS_DAYS - shift));
-            for (i = 0; i < shift; i++)
-                s->act[i] = 0;
-        }
-        s->act_day = day;
-    }
+    s->act_day = day;
+}
+
+static void count_day(stats_t *s, int day)
+{
+    int i;
+    if (day <= 0 || day > DAY_MAX)
+        return;
+    days_insert(s, day, day);
+    days_derive(s);
+    act_follow(s, day);
     i = s->act_day - day;
     if (i >= 0 && i < STATS_DAYS)
         s->act[i]++;
@@ -144,6 +221,76 @@ int stats_weak(const stats_t *s, int dir, char *out, int cap)
 }
 
 /* ------------------------------------------------------------------------ */
+/* Devices                                                                   */
+/* ------------------------------------------------------------------------ */
+
+/* The better record: the higher, and on a tie the one set first. */
+static void best_record(stats_record *dst, const stats_record *src)
+{
+    if (src->value > dst->value ||
+        (src->value == dst->value && src->value > 0 && src->day > 0 && (dst->day <= 0 || src->day < dst->day)))
+        *dst = *src;
+}
+
+void stats_merge(stats_t *dst, const stats_t *src)
+{
+    int d, i, k;
+    for (d = 0; d < 2; d++) {
+        stats_dir *a = &dst->dir[d];
+        const stats_dir *b = &src->dir[d];
+        a->sessions += b->sessions;
+        a->answers += b->answers;
+        a->correct += b->correct;
+        a->seconds += b->seconds;
+        for (i = 0; i < 128; i++) {
+            a->seen[i] += b->seen[i];
+            a->miss[i] += b->miss[i];
+        }
+    }
+    for (i = 0; i < STATS_LEVELS; i++)
+        best_record(&dst->copy_rec[i], &src->copy_rec[i]);
+    best_record(&dst->send_rec, &src->send_rec);
+    dst->copy_items += src->copy_items;
+    dst->copy_listens += src->copy_listens;
+    dst->copy_first += src->copy_first;
+    dst->copy_failed += src->copy_failed;
+    dst->send_timed += src->send_timed;
+    dst->send_wpm10 += src->send_wpm10;
+    dst->send_ratio10 += src->send_ratio10;
+    dst->send_best10 = maxi(dst->send_best10, src->send_best10);
+    dst->koch = maxi(dst->koch, src->koch);
+
+    /* The days: the union of the runs. Folded days cannot be told apart, so
+     * the two counts may overlap: the larger one is kept. */
+    if (src->first_day > 0 && (dst->first_day <= 0 || src->first_day < dst->first_day))
+        dst->first_day = src->first_day;
+    dst->old_days = maxi(dst->old_days, src->old_days);
+    dst->old_best = maxi(dst->old_best, src->old_best);
+    for (i = 0; i < src->nranges; i++)
+        days_insert(dst, src->range[i][0], src->range[i][1]);
+    days_derive(dst);
+
+    if (src->act_day > 0) {
+        act_follow(dst, src->act_day);
+        for (i = 0; i < STATS_DAYS; i++) {
+            k = dst->act_day - src->act_day + i;
+            if (k < STATS_DAYS)
+                dst->act[k] += src->act[i];
+        }
+    }
+}
+
+void stats_lift(stats_t *s, const stats_t *total)
+{
+    int i;
+    for (i = 0; i < STATS_LEVELS; i++)
+        best_record(&s->copy_rec[i], &total->copy_rec[i]);
+    best_record(&s->send_rec, &total->send_rec);
+    s->send_best10 = maxi(s->send_best10, total->send_best10);
+    s->koch = maxi(s->koch, total->koch);
+}
+
+/* ------------------------------------------------------------------------ */
 /* Dates                                                                     */
 /* ------------------------------------------------------------------------ */
 
@@ -214,6 +361,8 @@ static const field_t FIELDS[] = {
     F("send_ratio10", send_ratio10),
     F("send_best10", send_best10),
     F("koch", koch),
+    F("older_days", old_days),
+    F("older_best", old_best),
     F("first_day", first_day),
     F("last_day", last_day),
     F("days", days),
@@ -288,7 +437,6 @@ int stats_format(const stats_t *s, char *out, int cap)
 {
     sbuf b = {out, 0, cap};
     int i;
-    put_s(&b, "# CWtty training records and statistics.\n");
     for (i = 0; i < ARRAY_LEN(FIELDS); i++) {
         put_s(&b, FIELDS[i].key);
         put_c(&b, '=');
@@ -300,6 +448,17 @@ int stats_format(const stats_t *s, char *out, int cap)
         if (i)
             put_c(&b, ' ');
         put_i(&b, s->act[i], 10);
+    }
+    put_c(&b, '\n');
+    put_s(&b, "practice=");
+    for (i = 0; i < s->nranges; i++) {
+        if (i)
+            put_c(&b, ' ');
+        put_i(&b, s->range[i][0], 10);
+        if (s->range[i][1] != s->range[i][0]) {
+            put_c(&b, '-');
+            put_i(&b, s->range[i][1], 10);
+        }
     }
     put_c(&b, '\n');
     put_chars(&b, "copy_chars", &s->dir[STATS_COPY]);
@@ -355,42 +514,93 @@ static void parse_chars(stats_dir *d, const char *v)
     }
 }
 
-/* The value of a line ends at the newline: the readers stop there. */
-static void parse_line(stats_t *s, const char *key, int klen, const char *v)
+static void parse_practice(stats_t *s, const char *v)
+{
+    int a, b;
+    while (get_i(&v, 10, &a)) {
+        b = a;
+        if (*v == '-') {
+            v++;
+            if (!get_i(&v, 10, &b))
+                return;
+        }
+        if (a >= 1 && a <= b && b <= DAY_MAX)
+            days_insert(s, a, b);
+    }
+}
+
+/* The value of a line ends at the newline: the readers stop there. Returns
+ * 1 for a known key. */
+static int parse_line(stats_t *s, const char *key, int klen, const char *v, int *practice)
 {
     char name[40];
     int *p, i;
     if (klen <= 0 || klen >= (int)sizeof name)
-        return;
+        return 0;
     memcpy(name, key, (size_t)klen);
     name[klen] = 0;
     if (strcmp(name, "activity") == 0) {
         for (i = 0; i < STATS_DAYS && get_i(&v, 10, &s->act[i]); i++) {
         }
+    } else if (strcmp(name, "practice") == 0) {
+        *practice = 1;
+        parse_practice(s, v);
     } else if (strcmp(name, "copy_chars") == 0) {
         parse_chars(&s->dir[STATS_COPY], v);
     } else if (strcmp(name, "send_chars") == 0) {
         parse_chars(&s->dir[STATS_SEND], v);
     } else if ((p = stats_field(s, name)) != NULL) {
         get_i(&v, 10, p);
+    } else {
+        return 0;
     }
+    return 1;
 }
 
-void stats_parse(stats_t *s, const char *text)
+/* Text from before the runs: the current streak and the days with activity
+ * are known, the other days only by their count. */
+static void rebuild_days(stats_t *s)
 {
-    int i;
+    int days = s->days, best = s->best_day_streak, i, known;
+    s->nranges = 0;
+    if (s->last_day > 0 && s->last_day <= DAY_MAX)
+        days_insert(s, maxi(1, s->last_day - maxi(s->day_streak, 1) + 1), s->last_day);
+    for (i = 0; i < STATS_DAYS; i++)
+        if (s->act[i] > 0 && s->act_day - i >= 1 && s->act_day - i <= DAY_MAX)
+            days_insert(s, s->act_day - i, s->act_day - i);
+    for (known = 0, i = 0; i < s->nranges; i++)
+        known += run_len(s->range[i]);
+    s->old_days = maxi(0, days - known);
+    s->old_best = s->old_days > 0 ? mini(maxi(best, 0), s->old_days) : 0;
+}
+
+int stats_parse_n(stats_t *s, const char *text, int n)
+{
+    const char *end = text + n;
+    int i, known = 0, practice = 0;
     stats_reset(s);
-    while (*text) {
+    while (text < end && *text) {
         const char *k = text;
-        while (*text && *text != '\n' && *text != '=')
+        while (text < end && *text && *text != '\n' && *text != '=')
             text++;
-        if (*k != '#' && *text == '=')
-            parse_line(s, k, (int)(text - k), text + 1);
-        while (*text && *text != '\n')
+        if (*k != '#' && text < end && *text == '=')
+            known += parse_line(s, k, (int)(text - k), text + 1, &practice);
+        while (text < end && *text && *text != '\n')
             text++;
-        if (*text)
+        if (text < end && *text)
             text++;
     }
     for (i = 0; i < 2; i++)
         s->dir[i].correct = clampi(s->dir[i].correct, 0, s->dir[i].answers);
+    s->old_days = maxi(s->old_days, 0);
+    s->old_best = clampi(s->old_best, 0, s->old_days);
+    if (!practice)
+        rebuild_days(s);
+    days_derive(s);
+    return known;
+}
+
+int stats_parse(stats_t *s, const char *text)
+{
+    return stats_parse_n(s, text, (int)strlen(text));
 }

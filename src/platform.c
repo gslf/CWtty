@@ -1,5 +1,6 @@
 /*
- * platform.c - Thin OS abstraction: clocks, sleeping and file locations.
+ * platform.c - Thin OS abstraction: clocks, sleeping, randomness, threads
+ * and file locations.
  */
 #include "platform.h"
 
@@ -11,12 +12,18 @@
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <bcrypt.h>
 #include <direct.h>
 #else
 #include <errno.h>
+#include <fcntl.h>
+#include <pthread.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
+#if defined(__linux__)
+#include <sys/random.h>
+#endif
 #endif
 
 #ifdef _WIN32
@@ -41,6 +48,41 @@ uint32_t plat_entropy(void)
     LARGE_INTEGER now;
     QueryPerformanceCounter(&now);
     return (uint32_t)now.QuadPart ^ (uint32_t)GetCurrentProcessId() ^ (uint32_t)time(NULL);
+}
+
+int plat_random(void *buf, size_t len)
+{
+    return BCryptGenRandom(NULL, (PUCHAR)buf, (ULONG)len, BCRYPT_USE_SYSTEM_PREFERRED_RNG) == 0 ? 0 : -1;
+}
+
+typedef struct {
+    void (*fn)(void *);
+    void *arg;
+} thread_start;
+
+static DWORD WINAPI thread_main(LPVOID p)
+{
+    thread_start s = *(thread_start *)p;
+    free(p);
+    s.fn(s.arg);
+    return 0;
+}
+
+int plat_thread(void (*fn)(void *), void *arg)
+{
+    thread_start *s = (thread_start *)malloc(sizeof *s);
+    HANDLE h;
+    if (!s)
+        return -1;
+    s->fn = fn;
+    s->arg = arg;
+    h = CreateThread(NULL, 0, thread_main, s, 0, NULL);
+    if (!h) {
+        free(s);
+        return -1;
+    }
+    CloseHandle(h);
+    return 0;
 }
 
 int plat_config_path(char *buf, size_t cap)
@@ -85,6 +127,76 @@ uint32_t plat_entropy(void)
     return (uint32_t)ts.tv_nsec ^ ((uint32_t)getpid() << 16) ^ (uint32_t)time(NULL);
 }
 
+int plat_random(void *buf, size_t len)
+{
+#if defined(__APPLE__)
+    arc4random_buf(buf, len);
+    return 0;
+#else
+    unsigned char *p = (unsigned char *)buf;
+    int fd;
+#if defined(__linux__)
+    while (len > 0) {
+        ssize_t n = getrandom(p, len, 0);
+        if (n < 0) {
+            if (errno == EINTR)
+                continue;
+            break;
+        }
+        p += n;
+        len -= (size_t)n;
+    }
+    if (len == 0)
+        return 0;
+#endif
+    fd = open("/dev/urandom", O_RDONLY);
+    if (fd < 0)
+        return -1;
+    while (len > 0) {
+        ssize_t n = read(fd, p, len);
+        if (n <= 0) {
+            if (n < 0 && errno == EINTR)
+                continue;
+            close(fd);
+            return -1;
+        }
+        p += n;
+        len -= (size_t)n;
+    }
+    close(fd);
+    return 0;
+#endif
+}
+
+typedef struct {
+    void (*fn)(void *);
+    void *arg;
+} thread_start;
+
+static void *thread_main(void *p)
+{
+    thread_start s = *(thread_start *)p;
+    free(p);
+    s.fn(s.arg);
+    return NULL;
+}
+
+int plat_thread(void (*fn)(void *), void *arg)
+{
+    thread_start *s = (thread_start *)malloc(sizeof *s);
+    pthread_t th;
+    if (!s)
+        return -1;
+    s->fn = fn;
+    s->arg = arg;
+    if (pthread_create(&th, NULL, thread_main, s) != 0) {
+        free(s);
+        return -1;
+    }
+    pthread_detach(th);
+    return 0;
+}
+
 /* mkdir -p for a single, already-absolute path. */
 static void make_dirs(char *path)
 {
@@ -124,6 +236,24 @@ int plat_config_path(char *buf, size_t cap)
 
 #endif
 
+int plat_home_path(const char *name, char *buf, size_t cap)
+{
+#ifdef _WIN32
+    const char *home = getenv("USERPROFILE"), *sep = "\\";
+#else
+    const char *home = getenv("HOME"), *sep = "/";
+#endif
+    size_t n;
+    if (!home || !*home)
+        return -1;
+    n = strlen(home);
+    while (n > 1 && (home[n - 1] == '/' || home[n - 1] == '\\'))
+        n--;
+    if ((size_t)snprintf(buf, cap, "%.*s%s%s", (int)n, home, *name ? sep : "", name) >= cap)
+        return -1;
+    return 0;
+}
+
 void plat_local_date(int *year, int *month, int *mday)
 {
     time_t now = time(NULL);
@@ -151,6 +281,36 @@ int plat_read_file(const char *path, char *buf, size_t cap)
     buf[n] = 0;
     fclose(f);
     return (int)n;
+}
+
+int plat_write_private(const char *path, const char *data, size_t len)
+{
+#ifdef _WIN32
+    /* The profile's folders are the user's alone already. */
+    return plat_write_file(path, data, len);
+#else
+    char tmp[1100];
+    int fd, ok;
+    size_t done = 0;
+    if ((size_t)snprintf(tmp, sizeof tmp, "%s.tmp", path) >= sizeof tmp)
+        return -1;
+    unlink(tmp);
+    fd = open(tmp, O_WRONLY | O_CREAT | O_EXCL, 0600);
+    if (fd < 0)
+        return -1;
+    while (done < len) {
+        ssize_t w = write(fd, data + done, len - done);
+        if (w <= 0)
+            break;
+        done += (size_t)w;
+    }
+    ok = done == len && fsync(fd) == 0;
+    ok = close(fd) == 0 && ok;
+    ok = ok && rename(tmp, path) == 0;
+    if (!ok)
+        unlink(tmp);
+    return ok ? 0 : -1;
+#endif
 }
 
 int plat_write_file(const char *path, const char *data, size_t len)

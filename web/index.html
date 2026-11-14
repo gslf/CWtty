@@ -22,6 +22,7 @@
     <symbol id="i-trx" viewBox="0 0 24 24"><path d="M8 20V5M4 9l4-4 4 4M16 4v15M12 15l4 4 4-4"/></symbol>
     <symbol id="i-train" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3"/></symbol>
     <symbol id="i-stats" viewBox="0 0 24 24"><path d="M5 20V12M10 20V5M15 20v-9M20 20V8"/></symbol>
+    <symbol id="i-net" viewBox="0 0 24 24"><path d="M12 13v8M8.5 9.5a5 5 0 0 1 7 0M5.3 6.3a9.5 9.5 0 0 1 13.4 0"/><circle cx="12" cy="12.5" r="1.2"/></symbol>
     <symbol id="i-more" viewBox="0 0 24 24"><path d="M5 12h.01M12 12h.01M19 12h.01" stroke-width="3"/></symbol>
     <symbol id="i-table" viewBox="0 0 24 24"><path d="M4 7h3M10 7h10M4 12h9M16 12h4M4 17h3M10 17h3M16 17h4"/></symbol>
     <symbol id="i-settings" viewBox="0 0 24 24"><path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/></symbol>
@@ -46,6 +47,7 @@
       <button data-mode="tx"><svg class="icon"><use href="#i-tx"/></svg><span>TX</span></button>
       <button data-mode="rx"><svg class="icon"><use href="#i-rx"/></svg><span>RX</span></button>
       <button data-mode="trx"><svg class="icon"><use href="#i-trx"/></svg><span>TX/RX</span></button>
+      <button data-mode="net"><svg class="icon"><use href="#i-net"/></svg><span>Rooms</span></button>
       <button data-mode="train"><svg class="icon"><use href="#i-train"/></svg><span>Training</span></button>
       <button data-mode="stats"><svg class="icon"><use href="#i-stats"/></svg><span>Stats</span></button>
       <button data-act="menu" class="more"><svg class="icon"><use href="#i-more"/></svg><span>More</span></button>
@@ -69,6 +71,7 @@
       <div class="text" id="log-tx"></div>
       <div class="text" id="log-rx"></div>
       <div class="text" id="log-trx"></div>
+      <div class="text" id="log-net"></div>
       <div class="empty" id="log-empty">
         <svg class="icon" id="empty-icon"><use href="#i-tx"/></svg>
         <p id="empty-title"></p>
@@ -146,12 +149,13 @@
     </section>
 
     <section id="statistics" class="panel">
-      <p class="bar"><small id="stats-since"></small></p>
+      <p class="bar"><small id="stats-since"></small><span class="bar-actions"><button type="button" data-act="statsExport" class="link" id="stats-export">Export</button><button type="button" data-act="statsImport" class="link">Import</button><button type="button" data-act="cloud" class="link" id="stats-cloud">Cloud</button></span></p>
+      <input type="file" id="stats-file" accept=".txt,text/plain" hidden>
       <div class="empty" id="stats-empty">
         <svg class="icon"><use href="#i-stats"/></svg>
         <p><b>No training yet</b></p>
         <p>Records, accuracy and progress show up here once you answer in Training.</p>
-        <p class="empty-actions"><button data-mode="train" class="primary">Start training</button></p>
+        <p class="empty-actions"><button data-mode="train" class="primary">Start training</button><button type="button" data-act="statsImport">Import statistics</button><button type="button" data-act="cloud" id="empty-cloud">Sync with Filen</button></p>
       </div>
       <div id="stats-body">
         <section class="block wide">
@@ -214,6 +218,23 @@
       </div>
     </section>
 
+    <!-- The online room: the form to enter one, then its stations. -->
+    <section id="net" class="panel">
+      <form id="net-form" autocomplete="off">
+        <p class="lead">Key together with other stations over the internet, from the web app or the terminal. Each station is heard on its own pitch.</p>
+        <div class="fields">
+          <label class="field"><span>Callsign</span><input id="net-call" maxlength="10" autocapitalize="characters" autocorrect="off" spellcheck="false" placeholder="IZ0ABC" enterkeyhint="go"></label>
+          <label class="field"><span>Room</span><input id="net-room" maxlength="24" autocorrect="off" spellcheck="false" placeholder="CQ" enterkeyhint="go"></label>
+          <label class="field"><span>Password</span><input id="net-pass" type="password" maxlength="63" placeholder="none: a public room" enterkeyhint="go"></label>
+        </div>
+        <p class="hint">A password makes the room private and its keying encrypted end to end: only who knows it is in. Choose an uncommon one.</p>
+        <p class="start"><button class="primary" id="net-join">Enter the room <kbd>Enter</kbd></button></p>
+      </form>
+      <div id="net-room-bar" class="bar"><b id="net-name"></b><small id="net-kind"></small><button type="button" data-act="leave" class="link">Leave</button></div>
+      <ul id="net-stations" aria-label="Stations"></ul>
+      <p id="net-links" aria-label="Brokers"></p>
+    </section>
+
     <section id="keying" class="panel">
       <canvas id="tape"></canvas>
       <p class="live"><b id="glyph"></b><span id="code" class="pattern"></span><small id="name"></small></p>
@@ -234,12 +255,14 @@
     <p class="hints" data-for="train-copy"><kbd>Type</kbd> answer <kbd>Enter</kbd> check, next <kbd>Tab</kbd> replay <kbd>Esc</kbd> setup</p>
     <p class="hints" data-for="train-send"><kbd>Space ← →</kbd> send <kbd>Enter</kbd> check, next <kbd>Tab</kbd> hint <kbd>Bksp</kbd> retry <kbd>Esc</kbd> setup</p>
     <p class="hints" data-for="stats"><kbd>p</kbd> training</p>
+    <p class="hints" data-for="net"><kbd>Space</kbd> straight key <kbd>← →</kbd> paddles <kbd>Enter</kbd> new line</p>
     <output id="toast"></output>
   </footer>
 
   <dialog id="menu-dialog">
     <div class="menu">
       <button data-install hidden><svg class="icon"><use href="#i-install"/></svg>Install app</button>
+      <button data-mode="stats" class="phone"><svg class="icon"><use href="#i-stats"/></svg>Statistics</button>
       <button data-act="table"><svg class="icon"><use href="#i-table"/></svg>Morse table</button>
       <button data-act="settings"><svg class="icon"><use href="#i-settings"/></svg>Settings</button>
       <button data-act="help"><svg class="icon"><use href="#i-help"/></svg>Help</button>
@@ -282,7 +305,44 @@
         <label>Break-in delay <span class="range"><input type="range" data-key="breakin_ms" min="50" max="3000" step="50" data-unit=" ms"><output></output></span></label>
         <label>Sidetone <input type="checkbox" class="switch" data-key="trx_sidetone"></label>
       </fieldset>
+      <fieldset>
+        <legend>Rooms</legend>
+        <label>Remote pitch <span class="range"><input type="range" data-key="net_tone" min="300" max="1500" step="10" data-unit=" Hz"><output></output></span></label>
+      </fieldset>
       <p class="actions"><button type="button" data-act="test"><svg class="icon"><use href="#i-play"/></svg>Test tone</button><button class="primary">Done</button></p>
+    </form>
+  </dialog>
+
+  <dialog id="cloud-dialog">
+    <form id="cloud-form" autocomplete="on">
+      <h2>Filen cloud <button type="button" data-act="cloudClose" class="icon-button quiet" title="Close"><svg class="icon"><use href="#i-clear"/></svg></button></h2>
+      <div id="cloud-off">
+        <p class="cloud-lead">Keep the statistics of all your devices in sync, end-to-end encrypted, in your <a href="https://filen.io" target="_blank" rel="noopener">Filen</a> account.</p>
+        <label class="field"><span>Email</span><input id="cloud-email" type="email" autocomplete="username" spellcheck="false" required></label>
+        <label class="field"><span>Password</span><input id="cloud-password" type="password" autocomplete="current-password" required></label>
+        <label class="field"><span>2FA code</span><input id="cloud-code" inputmode="numeric" autocomplete="one-time-code" maxlength="8" pattern="[0-9 ]*" placeholder="only if your account uses 2FA"></label>
+        <label class="field"><span>Stay signed in</span><input id="cloud-remember" type="checkbox" class="switch" checked></label>
+        <p class="cloud-status" id="cloud-login-status">The password stays here: only a key derived from it is sent.</p>
+        <p class="actions"><button type="submit" class="primary" id="cloud-login">Sign in</button></p>
+      </div>
+      <div id="cloud-on" hidden>
+        <dl class="cloud-info">
+          <dt>Account</dt><dd id="cloud-account"></dd>
+          <dt>Status</dt><dd id="cloud-state"></dd>
+          <dt>Devices</dt><dd id="cloud-devices"></dd>
+          <dt>Folder</dt><dd>CWtty/stats-v1</dd>
+        </dl>
+        <p class="cloud-status">Every device adds its own; the totals are their sum. Synced at start, a minute after training and when you leave.</p>
+        <p class="actions"><button type="button" data-act="cloudOut">Disconnect</button><button type="button" data-act="cloudSync" class="primary" id="cloud-sync">Sync now</button></p>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="confirm-dialog">
+    <form method="dialog">
+      <h2 id="confirm-title"></h2>
+      <p class="confirm-text" id="confirm-text"></p>
+      <p class="actions"><button value="no" id="confirm-no" autofocus></button><button value="yes" id="confirm-yes" class="primary"></button></p>
     </form>
   </dialog>
 
@@ -303,7 +363,9 @@
         <dt>Training</dt><dd>Choose Receive or Send, then Start. Enter checks and moves on; a wrong character restarts the item. Tab replays (copy) or toggles the hint (send). Setup (or Esc) changes the session, and Resume brings it back while nothing changed</dd>
         <dt>Level</dt><dd>Copy: how many times an item can be heard, 4 at level 1 down to 1 at level 4. Out of listens, a wrong answer shows the item</dd>
         <dt>Records</dt><dd>The best streak of correct answers, one per copy level and one for send. Beat it for a NEW RECORD</dd>
-        <dt>Stats</dt><dd>Records, accuracy, time, listens, sending speed, the last four weeks and each character. Kept in this browser</dd>
+        <dt>Stats</dt><dd>Records, accuracy, time, listens, sending speed, the last four weeks and each character. Kept in this browser; Export saves them to a file, Import brings a file back (it replaces them, after asking), Cloud keeps every device in sync on Filen, end-to-end encrypted (two-factor sign-in too): the totals are the sum of the devices</dd>
+        <dt>Rooms</dt><dd>Online rooms: everybody in a room hears everybody, each station on its own pitch (around Remote pitch in Settings), from this app or the terminal one. A password makes the room private and encrypted. Leaving the tab leaves the room</dd>
+        <dt>K</dt><dd>In a room, K passes the turn and ends your line, as on the air; so do KN, BK, AR and SK, and BT (=) starts a new paragraph. A line also ends when another station starts transmitting, or after a pause</dd>
       </dl>
       <p class="about">CWtty, the PWA of the terminal app: the same C core, compiled to WebAssembly. Works offline once loaded. MIT License.</p>
     </form>

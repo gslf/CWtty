@@ -68,9 +68,20 @@ void audio_stop_playback(void);
 int  audio_playback_busy(void);
 
 /* Key events and the playback clock. */
-int    audio_poll_events(audio_event *ev, int cap);
-double audio_clock_ms(void);
-double audio_to_ms(uint64_t samples);
+int      audio_poll_events(audio_event *ev, int cap);
+double   audio_clock_ms(void);
+double   audio_to_ms(uint64_t samples);
+uint64_t audio_ms_to_samples(double ms);
+/* The length of an audio period: the playback clock moves in such steps. */
+double   audio_period_ms(void);
+
+/* Remote stations (voices.h): one tone each, keyed at given times of the
+ * playback clock. They are not affected by audio_stop_playback(). */
+void audio_voice_tone(int voice, int tone_hz);
+void audio_voice_volume(int volume);
+int  audio_voice_key(int voice, double t_ms, int on);
+/* Silences every voice at once and drops what is queued. */
+void audio_voice_clear(void);
 
 /* Capture. */
 int  audio_capture_start(void);

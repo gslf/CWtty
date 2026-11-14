@@ -76,6 +76,8 @@ jobs:
           cmake --install build --config Release --prefix stage $strip
           mkdir pkg
           cp stage/bin/* LICENSE README.md pkg/
+          cp third_party/mbedtls/LICENSE pkg/LICENSE.mbedtls
+          cp third_party/monocypher/LICENCE.md pkg/LICENSE.monocypher.md
           ./pkg/cwtty --version
           case "${{ matrix.asset }}" in
             *.zip) (cd pkg && 7z a -tzip "../${{ matrix.asset }}" *) ;;

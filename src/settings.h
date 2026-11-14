@@ -47,6 +47,11 @@ typedef struct {
     int train_hint;
     int train_strict; /* require word spacing; 0 allows pauses between letters */
     int train_level;  /* copy: 1..4, the item can be heard 5 - level times */
+
+    /* Online rooms */
+    char callsign[SETTINGS_NAME_CAP]; /* [A-Z0-9/], at most 10 */
+    char net_room[SETTINGS_NAME_CAP]; /* the last room entered */
+    int  net_tone;                    /* the remote stations' pitches spread around it */
 } settings_t;
 
 /* Receiver filter bandwidths offered in the UI. */

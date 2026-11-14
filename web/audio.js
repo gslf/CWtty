@@ -20,6 +20,8 @@ export async function start(wasm, report) {
 
 export const running = () => ctx?.state === 'running';
 
+export const onStateChange = (fn) => ctx?.addEventListener('statechange', fn);
+
 export const send = (...message) => node?.port.postMessage(message);
 
 // Returns false when the microphone cannot be opened.

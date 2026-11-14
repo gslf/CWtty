@@ -64,7 +64,12 @@ void ui_waterfall(rect_t r, const rx_dsp *d, float fmin, float fmax);
 /* Frequency axis with the receiver passband highlighted (2 rows). */
 void ui_freq_axis(rect_t r, float fmin, float fmax, float tuned, float bw, uint32_t bg);
 
-/* Word-wrapped transcript, bottom aligned. labels: RX/TX gutter. */
+/* Word-wrapped transcript, bottom aligned. labels: 1 an RX/TX gutter, 2 a
+ * gutter with the station of each line. */
 void ui_transcript(rect_t r, const transcript *t, int labels, int cursor_dir, int cursor_on);
+
+/* A one-line text input showing value (as stars when masked), with a
+ * cursor at its end when focused. ASCII values. */
+void ui_field(int x, int y, int w, const char *value, int focused, int masked, int cursor_on);
 
 #endif

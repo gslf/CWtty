@@ -13,7 +13,8 @@
 
 #define STATS_LEVELS 4 /* copy levels, see settings_t.train_level */
 #define STATS_DAYS 28  /* days of activity kept */
-#define STATS_TEXT_CAP 8192
+#define STATS_RANGES 128 /* runs of consecutive days practised kept */
+#define STATS_TEXT_CAP 16384 /* the text form of one stats_t always fits */
 
 enum { STATS_COPY = 0, STATS_SEND = 1 }; /* = TRAIN_COPY, TRAIN_SEND */
 
@@ -44,7 +45,14 @@ typedef struct {
 
     int koch; /* highest Koch lesson practised */
 
-    /* Days practised. */
+    /* Days practised: runs of consecutive days [from, to], the oldest
+     * first. Past STATS_RANGES runs the oldest are folded into old_days and
+     * old_best. The days, the streaks and the last day are derived from
+     * them (stats_merge() needs the days themselves: two devices may have
+     * practised on the same day). */
+    int nranges;
+    int range[STATS_RANGES][2];
+    int old_days, old_best;
     int first_day, last_day, days, day_streak, best_day_streak;
     int act_day;          /* the day of act[0] */
     int act[STATS_DAYS];  /* answers on act_day - i */
@@ -78,9 +86,22 @@ int stats_weak(const stats_t *s, int dir, char *out, int cap);
 /* Accuracy of a character in percent, -1 if never seen. */
 int stats_char_pct(const stats_t *s, int dir, int ch);
 
-/* Text form, "key=value" lines: the length, or -1 if cap is too small. */
-int  stats_format(const stats_t *s, char *out, int cap);
-void stats_parse(stats_t *s, const char *text);
+/* Adds src to dst, as if both histories had happened in one place:
+ * counts are summed, the days practised joined, the activity aligned and
+ * the records, the Koch lesson and the fastest sending take the best. */
+void stats_merge(stats_t *dst, const stats_t *src);
+
+/* Raises the records, the Koch lesson and the fastest sending of s to
+ * those of total, so that a new record is a record of all the devices. */
+void stats_lift(stats_t *s, const stats_t *total);
+
+/* Text form, "key=value" lines: the length, or -1 if cap is too small.
+ * The parsers return the number of lines they recognised; text from before
+ * the practice= line gets its days rebuilt from the activity and the
+ * streak. */
+int stats_format(const stats_t *s, char *out, int cap);
+int stats_parse(stats_t *s, const char *text);
+int stats_parse_n(stats_t *s, const char *text, int n);
 
 /* An integer by its key in the text form ("copy_answers"), or NULL. */
 int *stats_field(stats_t *s, const char *key);

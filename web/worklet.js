@@ -1,7 +1,7 @@
-// worklet.js - The audio thread: runs the transmitter engine and the capture
-// resampler of cwtty.wasm (wasm/worklet.c). Reports the operator's key
-// events, the clock and the 8 kHz capture to the page every 20 ms, and at
-// once when the key changes.
+// worklet.js - The audio thread: runs the transmitter engine, the remote
+// stations' voices and the capture resampler of cwtty.wasm (wasm/worklet.c).
+// Reports the operator's key events, the clock and the 8 kHz capture to the
+// page every 20 ms, and at once when the key changes.
 
 const REPORT_S = 0.02;
 
@@ -25,6 +25,16 @@ class CWtty extends AudioWorkletProcessor {
         w.wk_play(wpm, effWpm, leadMs);
       },
       capture: (on) => (this.capturing = !!on),
+      // Remote stations: (voice, ms, on) triples, the pitch of a voice,
+      // their volume, and a reset.
+      voices: (keys) => {
+        const n = Math.min(keys.length / 3, w.wk_voice_cap());
+        new Float64Array(w.memory.buffer, w.wk_voice_buf(), 3 * n).set(keys.subarray(0, 3 * n));
+        w.wk_voice_keys(n);
+      },
+      tone: w.wk_voice_tone,
+      vvolume: w.wk_voice_volume,
+      vclear: w.wk_voice_clear,
     };
     this.port.onmessage = ({ data: [command, ...args] }) => commands[command](...args);
   }
