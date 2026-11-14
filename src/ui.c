@@ -388,7 +388,7 @@ void ui_transcript(rect_t r, const transcript *t, int labels, int cursor_dir, in
 {
     enum { MAXROWS = 256 };
     static vrow rows[MAXROWS];
-    int gutter = labels ? 5 : 0;
+    int gutter = labels == 2 ? TR_WHO_CAP + 1 : (labels ? 5 : 0), bar = labels == 2 ? TR_WHO_CAP - 1 : 3;
     int tw = r.w - gutter, nrows = 0, li, y, i;
     if (tw < 4 || r.h < 1)
         return;
@@ -415,18 +415,23 @@ void ui_transcript(rect_t r, const transcript *t, int labels, int cursor_dir, in
         y = r.y + r.h - 1 - i;
         if (labels) {
             if (v->first && l->dir != DIR_SYS) {
-                scr_text(r.x, y, l->dir == DIR_TX ? "TX" : "RX", l->dir == DIR_TX ? TH_ACCENT : TH_FG_MUTED,
-                         COLOR_KEEP, A_BOLD);
+                const char *label = labels == 2 ? l->who : (l->dir == DIR_TX ? "TX" : "RX");
+                scr_text(r.x, y, label, l->dir == DIR_TX ? TH_ACCENT : TH_FG_MUTED, COLOR_KEEP, A_BOLD);
             }
-            scr_put(r.x + 3, y, 0x2502, l->dir == DIR_TX ? TH_ACCENT_LO : TH_LINE, COLOR_KEEP, 0);
+            scr_put(r.x + bar, y, 0x2502, l->dir == DIR_TX ? TH_ACCENT_LO : TH_LINE, COLOR_KEEP, 0);
         }
         for (k = 0; k < v->len; k++) {
             int s = l->style[v->start + k];
             uint32_t fg = base;
             int attr = 0;
             if (s == STY_PROSIGN) {
-                fg = rgb_mix(base, TH_SURFACE, 0.35f);
+                fg = TH_SIGN;
                 attr = A_UNDERLINE;
+            } else if (s == STY_SIGN) {
+                fg = TH_SIGN;
+                attr = A_BOLD;
+            } else if (s == STY_ABBR) {
+                fg = TH_ABBR;
             } else if (s == STY_UNKNOWN) {
                 fg = TH_ERR;
             }
@@ -435,9 +440,28 @@ void ui_transcript(rect_t r, const transcript *t, int labels, int cursor_dir, in
             scr_put(x + k, y, (unsigned char)l->text[v->start + k], fg, COLOR_KEEP, attr);
         }
         /* Cursor after the very last character. */
-        if (i == 0 && cursor_on && l->dir == cursor_dir && !l->closed && x + v->len < r.x + r.w)
+        if (i == 0 && cursor_on && l->dir == cursor_dir && !l->closed && x + v->len < r.x + r.w &&
+            (labels != 2 || l->dir == DIR_TX))
             scr_put(x + v->len, y, 0x258F, cursor_dir == DIR_TX ? TH_ACCENT : TH_RX, COLOR_KEEP, 0);
     }
     if (nrows == 0 && cursor_on)
         scr_put(r.x + gutter, r.y + r.h - 1, 0x258F, cursor_dir == DIR_TX ? TH_ACCENT : TH_RX, COLOR_KEEP, 0);
+}
+
+void ui_field(int x, int y, int w, const char *value, int focused, int masked, int cursor_on)
+{
+    char shown[TR_LINE_CAP];
+    int n = (int)strlen(value), i, start;
+    uint32_t bg = focused ? TH_SURFACE_3 : TH_SURFACE;
+    if (w < 2)
+        return;
+    for (i = 0; i < n && i < (int)sizeof shown - 1; i++)
+        shown[i] = masked ? '*' : value[i];
+    shown[i] = 0;
+    /* Keep the end (and the cursor) visible. */
+    start = n > w - 2 ? n - (w - 2) : 0;
+    scr_fill(rect_make(x, y, w, 1), ' ', TH_FG, bg);
+    scr_text(x + 1, y, shown + start, focused ? TH_FG : TH_FG_MUTED, bg, 0);
+    if (focused && cursor_on)
+        scr_put(x + 1 + (n - start), y, 0x258F, TH_ACCENT, bg, 0);
 }

@@ -1,7 +1,7 @@
 /*
  * worklet.c - The audio thread of the web app (an AudioWorklet): the
- * shared transmitter engine with a text playback queue, and the capture
- * brought down to the receiver's 8 kHz.
+ * shared transmitter engine with a text playback queue, the remote
+ * stations' voices, and the capture brought down to the receiver's 8 kHz.
  *
  * worklet.js calls these from the audio thread only, between and during
  * render quanta: no locking is needed.
@@ -12,6 +12,7 @@
 #include "engine.h"
 #include "morse.h"
 #include "util.h"
+#include "voices.h"
 
 #define EXPORT __attribute__((visibility("default")))
 
@@ -20,6 +21,7 @@
 #define EVENTS_CAP 512
 #define SEGS_CAP 8192
 #define TEXT_CAP 1024
+#define VKEYS_CAP 512 /* remote key changes per command */
 
 typedef struct {
     uint32_t samples;
@@ -42,6 +44,10 @@ static dsp_resampler resampler;
 static float         out[FRAMES_CAP], in[FRAMES_CAP], rx[RX_CAP + FRAMES_CAP + 1];
 static int           nrx;
 static char          text[TEXT_CAP];
+
+static voices_t voices;
+static double   vkeys[3 * VKEYS_CAP]; /* (voice, ms, on) */
+static int      vvolume = 70;
 
 static int playback(void *ctx)
 {
@@ -89,6 +95,7 @@ EXPORT void wk_init(double sample_rate)
 {
     rate = sample_rate;
     engine_init(&eng);
+    voices_init(&voices);
     dsp_resampler_init(&resampler, sample_rate);
 }
 
@@ -146,10 +153,48 @@ EXPORT float *wk_output(void)
     return out;
 }
 
-/* Renders frames of mono sidetone into wk_output(). */
+/* Remote stations: the key changes in wk_voice_buf(), times on the
+ * worklet clock (wk_clock_ms). */
+EXPORT double *wk_voice_buf(void)
+{
+    return vkeys;
+}
+
+EXPORT int wk_voice_cap(void)
+{
+    return VKEYS_CAP;
+}
+
+EXPORT void wk_voice_keys(int n)
+{
+    int i;
+    for (i = 0; i < clampi(n, 0, VKEYS_CAP); i++) {
+        double t = vkeys[3 * i + 1] * rate / 1000.0;
+        voices_push(&voices, (int)vkeys[3 * i], t > 0.0 ? (uint64_t)(t + 0.5) : 0, vkeys[3 * i + 2] != 0.0);
+    }
+}
+
+EXPORT void wk_voice_tone(int voice, int tone_hz)
+{
+    voices_tone(&voices, voice, tone_hz);
+}
+
+EXPORT void wk_voice_volume(int volume)
+{
+    vvolume = volume;
+}
+
+EXPORT void wk_voice_clear(void)
+{
+    voices_reset(&voices);
+}
+
+/* Renders frames of mono sidetone and remote voices into wk_output(). */
 EXPORT void wk_render(int frames)
 {
     static const engine_io io = {playback, event, NULL};
+    uint64_t t0 = eng.clock;
+    int n = clampi(frames, 0, FRAMES_CAP);
     eng.dit = enabled && level[0];
     eng.dah = enabled && level[1];
     eng.straight = enabled && level[2];
@@ -157,7 +202,9 @@ EXPORT void wk_render(int frames)
     eng.dah_edge = enabled && edge[1];
     eng.straight_edge = enabled && edge[2];
     edge[0] = edge[1] = edge[2] = 0;
-    engine_render(&eng, &io, out, clampi(frames, 0, FRAMES_CAP), 1, rate);
+    engine_render(&eng, &io, out, n, 1, rate);
+    voices_volume(&voices, vvolume, eng.rise_ms);
+    voices_mix(&voices, out, n, 1, rate, t0);
 }
 
 /* Resamples frames of wk_input() into the receive buffer. */

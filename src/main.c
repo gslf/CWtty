@@ -13,6 +13,8 @@
 #include "app.h"
 #include "audio.h"
 #include "input.h"
+#include "net_cli.h"
+#include "netio.h"
 #include "platform.h"
 #include "render.h"
 #include "term.h"
@@ -29,13 +31,19 @@ static void usage(void)
     printf("CWtty %s - Morse telegraphy in your terminal\n\n"
            "Usage: cwtty [options]\n\n"
            "Options:\n"
-           "  -m, --mode MODE     start in tx, rx, trx, train or stats\n"
+           "  -m, --mode MODE     start in tx, rx, trx, rooms, train or stats\n"
            "  -c, --config FILE   use FILE for the settings\n"
            "      --legacy-keys   do not use the kitty keyboard protocol\n"
            "      --demo          feed the receiver with a simulated band\n"
            "      --list-devices  list the audio devices and exit\n"
            "  -v, --version       print the version and exit\n"
            "  -h, --help          show this help\n\n"
+           "Rooms without the interface:\n"
+           "      --net-listen    print what is keyed in a room (Ctrl-C to stop)\n"
+           "      --net-send TEXT key TEXT into a room, then exit\n"
+           "      --room NAME     the room (default: the last one entered)\n"
+           "      --call CALL     your callsign (default: the one in the settings)\n"
+           "      --password P    enter the private room NAME with password P\n\n"
            "Environment:\n"
            "  CWTTY_COLOR=256|truecolor   force the colour mode\n\n"
            "Press C-x inside the program for the command menu.\n",
@@ -54,6 +62,8 @@ static int parse_mode(const char *s)
         return MODE_TRAIN;
     if (strcmp(s, "stats") == 0)
         return MODE_STATS;
+    if (strcmp(s, "rooms") == 0 || strcmp(s, "net") == 0)
+        return MODE_NET;
     return -1;
 }
 
@@ -105,6 +115,8 @@ static int detect_truecolor(void)
 int main(int argc, char **argv)
 {
     app_options opt;
+    net_cli_options net;
+    int net_mode = 0;
     app_t *app;
     int i, w, h;
     double next_frame = 0;
@@ -113,6 +125,7 @@ int main(int argc, char **argv)
 #endif
 
     memset(&opt, 0, sizeof opt);
+    memset(&net, 0, sizeof net);
     for (i = 1; i < argc; i++) {
         const char *s = argv[i];
         if (strcmp(s, "-h") == 0 || strcmp(s, "--help") == 0) {
@@ -130,11 +143,24 @@ int main(int argc, char **argv)
         } else if ((strcmp(s, "-m") == 0 || strcmp(s, "--mode") == 0) && i + 1 < argc) {
             opt.start_mode = parse_mode(argv[++i]);
             if (opt.start_mode < 0) {
-                fprintf(stderr, "cwtty: unknown mode '%s' (use tx, rx, trx, train or stats)\n", argv[i]);
+                fprintf(stderr, "cwtty: unknown mode '%s' (use tx, rx, trx, rooms, train or stats)\n", argv[i]);
                 return 2;
             }
         } else if ((strcmp(s, "-c") == 0 || strcmp(s, "--config") == 0) && i + 1 < argc) {
             str_copy(opt.config_override, sizeof opt.config_override, argv[++i]);
+        } else if (strcmp(s, "--net-listen") == 0) {
+            net_mode = 1;
+            net.send = 0;
+        } else if (strcmp(s, "--net-send") == 0 && i + 1 < argc) {
+            net_mode = 1;
+            net.send = 1;
+            str_copy(net.text, sizeof net.text, argv[++i]);
+        } else if (strcmp(s, "--room") == 0 && i + 1 < argc) {
+            str_copy(net.room, sizeof net.room, argv[++i]);
+        } else if (strcmp(s, "--call") == 0 && i + 1 < argc) {
+            str_copy(net.call, sizeof net.call, argv[++i]);
+        } else if (strcmp(s, "--password") == 0 && i + 1 < argc) {
+            str_copy(net.password, sizeof net.password, argv[++i]);
         } else {
             fprintf(stderr, "cwtty: unknown option '%s'\n\n", s);
             usage();
@@ -148,6 +174,12 @@ int main(int argc, char **argv)
     }
 
     rng_seed(plat_entropy());
+    netio_startup();
+
+    if (net_mode) {
+        str_copy(net.config, sizeof net.config, opt.config_override);
+        return net_cli(&net);
+    }
 
     if (term_init() != 0) {
         fprintf(stderr, "cwtty: this program needs an interactive terminal%s\n",

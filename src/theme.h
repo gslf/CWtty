@@ -38,4 +38,9 @@
 #define TH_RX 0xD9E2EBu
 #define TH_TX TH_ACCENT
 
+/* Words of procedure in the transcripts (abbr.h): signs such as K or AR,
+ * and abbreviations such as QRL or 73. */
+#define TH_SIGN 0xF2A3FFu
+#define TH_ABBR 0x7FD1FFu
+
 #endif

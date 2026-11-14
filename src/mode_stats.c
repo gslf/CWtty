@@ -7,6 +7,7 @@
 #include <string.h>
 
 #include "app.h"
+#include "cloud.h"
 #include "theme.h"
 #include "util.h"
 
@@ -111,17 +112,17 @@ static int characters(app_t *a, int x, int y, int w, int dir)
     }
     for (i = 0; i < ARRAY_LEN(CHAR_ROWS); i++, y++) {
         for (k = 0, cx = x + 2; CHAR_ROWS[i][k] && cx < x + w; k++, cx += gap) {
-            int p = stats_char_pct(&a->stats, dir, (unsigned char)CHAR_ROWS[i][k]);
+            int p = stats_char_pct(&a->book.total, dir, (unsigned char)CHAR_ROWS[i][k]);
             uint32_t col = p < 0 ? TH_FG_GHOST : (p >= 90 ? TH_OK : (p >= 75 ? TH_ACCENT : TH_ERR));
             scr_put(cx, y, (unsigned char)CHAR_ROWS[i][k], col, COLOR_KEEP, p < 0 ? 0 : A_BOLD);
         }
     }
-    n = stats_weak(&a->stats, dir, weak, (int)sizeof weak);
+    n = stats_weak(&a->book.total, dir, weak, (int)sizeof weak);
     cx = x + 2 + scr_text(x + 2, y, "Weakest", TH_FG_MUTED, COLOR_KEEP, 0) + 2;
     if (n == 0)
         scr_text(cx, y, "none yet", TH_FG_FAINT, COLOR_KEEP, 0);
     for (i = 0; i < n; i++) {
-        snprintf(buf, sizeof buf, "%d%%", stats_char_pct(&a->stats, dir, (unsigned char)weak[i]));
+        snprintf(buf, sizeof buf, "%d%%", stats_char_pct(&a->book.total, dir, (unsigned char)weak[i]));
         if (cx + 2 + utf8_width(buf) > x + w)
             break;
         scr_put(cx, y, (unsigned char)weak[i], TH_WARN, COLOR_KEEP, A_BOLD);
@@ -149,7 +150,7 @@ static int time_row(int x, int y, int w, const stats_dir *d)
 
 static int column_copy(app_t *a, int x, int y, int w)
 {
-    const stats_t *s = &a->stats;
+    const stats_t *s = &a->book.total;
     const stats_dir *d = &s->dir[STATS_COPY];
     char value[16], lng[48], label[16];
     int lv;
@@ -176,7 +177,7 @@ static int column_copy(app_t *a, int x, int y, int w)
 
 static int column_send(app_t *a, int x, int y, int w, int beside)
 {
-    const stats_t *s = &a->stats;
+    const stats_t *s = &a->book.total;
     const stats_dir *d = &s->dir[STATS_SEND];
     char value[16], lng[48];
 
@@ -200,7 +201,7 @@ static int column_send(app_t *a, int x, int y, int w, int beside)
 /* Answers per day over the last four weeks, as two rows of bars. */
 static int activity(app_t *a, int x, int y, int w)
 {
-    const stats_t *s = &a->stats;
+    const stats_t *s = &a->book.total;
     char note[160], koch[32] = "";
     int i, max = 1, total = 0, bw, step, bx, today = a->today;
 
@@ -249,14 +250,23 @@ static int activity(app_t *a, int x, int y, int w)
 
 void stats_render(app_t *a, rect_t r)
 {
-    const stats_t *s = &a->stats;
+    const stats_t *s = &a->book.total;
     rect_t in = rect_make(r.x + 2, r.y + 1, r.w - 4, r.h - 2);
-    char info[64] = "", date[32];
+    char info[96] = "", date[32], sync[40] = "";
     int y, top, max_scroll;
 
+    /* The cloud, then the first day. */
+    if (cloud_state() == CLOUD_BUSY && cloud_email()[0])
+        str_copy(sync, sizeof sync, "syncing…");
+    else if (cloud_state() == CLOUD_READY && a->cloud_failed)
+        str_copy(sync, sizeof sync, "sync failed");
+    else if (cloud_state() == CLOUD_READY && cloud_synced()[0])
+        snprintf(sync, sizeof sync, "synced %s", cloud_synced());
     fmt_date(s->first_day, date, sizeof date);
     if (date[0])
-        snprintf(info, sizeof info, "since %s", date);
+        snprintf(info, sizeof info, "since %s%s%s", date, sync[0] ? "  ·  " : "", sync);
+    else
+        str_copy(info, sizeof info, sync);
     ui_panel(r, "Statistics", info, 0);
 
     if (s->dir[STATS_COPY].answers + s->dir[STATS_SEND].answers == 0) {
@@ -268,6 +278,11 @@ void stats_render(app_t *a, rect_t r)
             scr_text(in.x + (in.w - utf8_width(l2)) / 2, cy + 2, l2, TH_FG_MUTED, COLOR_KEEP, 0);
         scr_text(in.x + (in.w - 22) / 2, cy + 4, " p ", TH_ON_ACCENT, TH_ACCENT, A_BOLD);
         scr_text(in.x + (in.w - 22) / 2 + 4, cy + 4, "start training", TH_FG, COLOR_KEEP, 0);
+        scr_text(in.x + (in.w - 22) / 2, cy + 6, " i ", TH_FG, TH_SURFACE_3, A_BOLD);
+        scr_text(in.x + (in.w - 22) / 2 + 4, cy + 6, "import statistics", TH_FG_MUTED, COLOR_KEEP, 0);
+        scr_text(in.x + (in.w - 22) / 2, cy + 7, " c ", TH_FG, TH_SURFACE_3, A_BOLD);
+        scr_text(in.x + (in.w - 22) / 2 + 4, cy + 7,
+                 cloud_state() == CLOUD_OFF ? "sync with Filen" : "Filen cloud", TH_FG_MUTED, COLOR_KEEP, 0);
         content_h = 0;
         return;
     }
@@ -312,6 +327,9 @@ int stats_key(app_t *a, const key_event *ev)
     case KEY_END: a->stats_scroll = 1000; break;
     case 'p':
     case KEY_ENTER: app_set_mode(a, MODE_TRAIN); return 1;
+    case 'e': app_export_stats(a); return 1;
+    case 'c': app_open_modal(a, MODAL_CLOUD); return 1;
+    case 'i': app_open_modal(a, MODAL_IMPORT); return 1;
     default: return 0;
     }
     a->stats_scroll = clampi(a->stats_scroll, 0, 1000);

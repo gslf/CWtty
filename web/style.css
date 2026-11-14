@@ -24,6 +24,8 @@
   --warn: #ffa94d;
   --err: #ff6b5e;
   --rx: #d9e2eb;
+  --sign: #f2a3ff; /* K, AR, SK... in the transcripts */
+  --abbr: #7fd1ff; /* QRL, 73, CQ... */
   --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
   --radius: 12px;
   --radius-s: 8px;
@@ -202,6 +204,9 @@ output { min-width: 3.5rem; color: var(--fg); font-variant-numeric: tabular-nums
 @keyframes grow { from { transform: scaleY(0); } }
 @keyframes blink { 50% { opacity: 0; } }
 @keyframes draw { from { stroke-dashoffset: 30; } }
+@keyframes arrive { 0% { opacity: 0; transform: translateX(-0.5rem); background: #d9e2eb33; } 20% { opacity: 1; transform: none; } 100% { background: #d9e2eb00; } }
+@keyframes arrive-tx { 0% { opacity: 0; transform: translateX(-0.5rem); background: #ffc61a2e; } 20% { opacity: 1; transform: none; } 100% { background: #ffc61a00; } }
+@keyframes arrive-who { 0%, 40% { color: var(--fg); } }
 
 @media (prefers-reduced-motion: reduce) {
   *, ::before, ::after { animation-duration: 1ms !important; animation-iteration-count: 1 !important; transition-duration: 1ms !important; }
@@ -332,18 +337,23 @@ main {
 .bar { display: flex; align-items: center; gap: 0.75rem; min-height: 1.75rem; margin: 0; }
 .bar small { color: var(--faint); font-size: 0.8rem; }
 .bar > small:last-child, .bar > small:has(+ button:last-child) { margin-left: auto; }
+.bar-actions { display: flex; gap: 1rem; margin-left: auto; font-size: 0.85rem; }
+.bar-actions .link { color: var(--faint); }
+.bar-actions .link:hover { color: var(--fg); }
 
 [data-view="tx"] :is(#log, #keying),
 [data-view="rx"] :is(#log, #signal),
 [data-view="trx"] :is(#log, #signal, #keying),
 [data-view^="train"] #train,
 [data-view="train-send"] #keying,
-[data-view="stats"] #statistics { display: flex; }
+[data-view="stats"] #statistics,
+[data-view="net"] :is(#log, #net, #keying),
+[data-view="net-join"] #net { display: flex; }
 
 [data-view="tx"] .hints[data-for="tx"], [data-view="rx"] .hints[data-for="rx"],
 [data-view="trx"] .hints[data-for="trx"], [data-view="train-setup"] .hints[data-for="train-setup"],
 [data-view="train-copy"] .hints[data-for="train-copy"], [data-view="train-send"] .hints[data-for="train-send"],
-[data-view="stats"] .hints[data-for="stats"] {
+[data-view="stats"] .hints[data-for="stats"], [data-view="net"] .hints[data-for="net"] {
   display: block;
 }
 
@@ -353,15 +363,28 @@ main {
 /* ---- Transcripts ---- */
 
 .text { display: none; flex: 1; min-height: 4rem; overflow-y: auto; font-size: 1.25rem; letter-spacing: 0.08em; scroll-behavior: smooth; }
-[data-view="tx"] #log-tx, [data-view="rx"] #log-rx, [data-view="trx"] #log-trx { display: block; }
+[data-view="tx"] #log-tx, [data-view="rx"] #log-rx, [data-view="trx"] #log-trx, [data-view="net"] #log-net { display: block; }
 .text div { margin: 0 0 0.25rem; overflow-wrap: anywhere; animation: fade var(--mid) var(--ease); }
 .text div[data-dir="rx"] { color: var(--rx); }
 .text div[data-dir="tx"] { color: var(--accent); }
 .text .in { display: inline-block; animation: ink var(--mid) var(--ease); white-space: pre; }
 #log-trx div::before { display: inline-block; width: 2.5rem; color: var(--faint); font-size: 0.75rem; content: "RX"; }
 #log-trx div[data-dir="tx"]::before { content: "TX"; }
+/* The room: each line starts with its station. */
+#log-net div::before { display: inline-block; min-width: 7rem; padding-right: 0.5rem; color: var(--faint); font-size: 0.75rem; letter-spacing: 0.04em; content: attr(data-who); }
+#log-net div[data-dir="tx"]::before { color: var(--accent-mid); }
+#log-net div[data-dir="sys"] { color: var(--faint); font-size: 0.8rem; font-style: italic; letter-spacing: 0; }
+#log-net div[data-dir="sys"]::before { min-width: 0; padding: 0; content: ""; }
+/* A new message slides in on a light that fades. */
+#log-net div { padding: 0.15rem 0.4rem; border-radius: 6px; }
+#log-net div.new { animation: arrive 1.8s var(--ease); }
+#log-net div.new[data-dir="tx"] { animation-name: arrive-tx; }
+#log-net div.new::before { animation: arrive-who 1.8s var(--ease); }
 .text div:last-child::after { content: "▁"; color: var(--accent); animation: blink 1.06s steps(1) infinite; }
 .prosign { text-decoration: overline; }
+/* Words of procedure stand out from the text (src/abbr.c). */
+.text .sign { color: var(--sign); font-weight: bold; }
+.text .abbr { color: var(--abbr); }
 .unknown { color: var(--faint); }
 
 /* The guide of an empty screen: what to do first. */
@@ -639,6 +662,59 @@ canvas { display: block; min-width: 0; max-width: 100%; }
 .legend i.fair { background: var(--accent); }
 .legend i.poor { background: var(--err); }
 
+/* ---- Online room ---- */
+
+#net { gap: 0.5rem; }
+#net-form { display: none; flex-direction: column; gap: 0.9rem; width: 100%; max-width: 38rem; margin: auto; }
+[data-view="net-join"] #net { flex: 1 0 auto; }
+[data-view="net-join"] #net-form { display: flex; animation: rise var(--slow) var(--ease) both; }
+[data-view="net-join"] :is(#net-room-bar, #net-stations) { display: none; }
+#net-form input:not([type="checkbox"]) {
+  min-width: 0;
+  padding: 0.55rem 0.75rem;
+  border: 0;
+  border-radius: var(--radius-s);
+  background: var(--s2);
+  outline: none;
+  transition: background var(--fast), box-shadow var(--fast);
+}
+#net-form input:focus { background: var(--s3); box-shadow: 0 0 0 2px var(--accent-mid); }
+#net-form input::placeholder { color: var(--faint); }
+#net-call { text-transform: uppercase; letter-spacing: 0.08em; }
+#net-form .hint { margin: 0; text-align: center; }
+#net-room-bar { gap: 0.6rem; }
+#net-room-bar > small { margin-left: 0; }
+/* How a transmission ends, at the top of the room's log. */
+[data-view="net"] #log-info { white-space: nowrap; }
+#log-info .k { display: inline-block; min-width: 1.5em; margin: 0 0.15em; border-radius: 4px; background: var(--accent-bg); color: var(--accent); text-align: center; }
+#net-name { color: var(--fg); letter-spacing: 0.06em; }
+#net-room-bar .link { margin-left: auto; }
+#net-stations { display: flex; flex-wrap: wrap; gap: 0.4rem; margin: 0; padding: 0; list-style: none; }
+#net-stations li {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.3rem 0.7rem;
+  border-radius: 999px;
+  background: var(--s2);
+  font-size: 0.85rem;
+  transition: background var(--fast), color var(--fast);
+  animation: pop var(--mid) var(--spring) both;
+}
+#net-stations li::before { width: 0.5rem; height: 0.5rem; border-radius: 50%; background: var(--ghost); content: ""; transition: background var(--fast), box-shadow var(--fast); }
+#net-stations li.on::before { background: var(--rx); box-shadow: 0 0 8px var(--rx); }
+#net-stations li.me b { color: var(--accent); }
+#net-stations li.me.on::before { background: var(--accent); box-shadow: 0 0 8px var(--accent); }
+#net-stations small { color: var(--faint); }
+#net-stations li.alone { background: none; color: var(--faint); font-style: italic; }
+#net-stations li.alone::before { display: none; }
+#net-links { display: flex; flex-wrap: wrap; gap: 0.4rem 1.2rem; margin: 0; color: var(--faint); font-size: 0.75rem; }
+#net-links span::before { content: "○ "; color: var(--warn); }
+#net-links span.up::before { content: "● "; color: var(--ok); }
+[data-view="net-join"] #net-links { justify-content: center; }
+[data-view="net-join"] #net-links span::before { content: "· "; color: var(--faint); }
+.menu .phone { display: none; }
+
 /* ---- Dialogs: they fade and lift in (sheets slide up on phones); the
  * padding is inside, so a tap on the dialog itself is a tap outside ---- */
 
@@ -663,8 +739,44 @@ dialog[open]::backdrop { background: #000a; backdrop-filter: blur(2px); }
 dialog > * { padding: 0.9rem 1.2rem 1.2rem; }
 dialog h2 { display: flex; justify-content: space-between; align-items: center; margin: 0 0 0.75rem; font-size: 1rem; }
 dialog.floating { position: fixed; top: 4rem; width: fit-content; max-width: calc(100% - 1.5rem); background: #121418f2; backdrop-filter: blur(8px); }
+/* In a room the table never hides the conversation: the screen moves down
+ * below it (app.js, tableRoom), the newest lines in sight. */
+body.table-open[data-view="net"] main { padding-top: calc(var(--table-covers, 0px) + 0.5rem); }
 
 #menu-dialog { width: min(18rem, calc(100% - 1.5rem)); }
+#confirm-dialog { width: min(26rem, calc(100% - 1.5rem)); }
+#cloud-dialog { width: min(30rem, calc(100% - 1.5rem)); }
+#cloud-dialog .field { grid-template-columns: 8.5rem minmax(0, 1fr); animation: none; }
+#cloud-dialog input:not([type="checkbox"]) {
+  min-width: 0;
+  padding: 0.55rem 0.75rem;
+  border: 0;
+  border-radius: var(--radius-s);
+  background: var(--s3);
+  outline: none;
+  transition: background var(--fast), box-shadow var(--fast);
+}
+#cloud-dialog input:focus { background: var(--s4); box-shadow: 0 0 0 2px var(--accent-mid); }
+#cloud-dialog input::placeholder { color: var(--faint); }
+#cloud-dialog .field > .switch { justify-self: start; }
+.cloud-lead { margin: 0 0 0.9rem; color: var(--muted); }
+.cloud-lead a { color: var(--accent); }
+.cloud-status { margin: 0.8rem 0 1rem; color: var(--faint); font-size: 0.85rem; }
+.cloud-status.warn { color: var(--warn); }
+.cloud-status.busy { color: var(--accent); }
+.cloud-info { display: grid; grid-template-columns: 6rem minmax(0, 1fr); gap: 0.55rem 1rem; margin: 0; }
+.cloud-info dt { color: var(--faint); }
+.cloud-info dd { margin: 0; overflow-wrap: anywhere; }
+.cloud-info dd.warn { color: var(--warn); }
+#cloud-dialog .actions { display: flex; gap: 0.6rem; margin: 0; }
+#stats-cloud.on::before, #stats-cloud.failed::before { content: "●"; margin-right: 0.35em; font-size: 0.7em; vertical-align: 0.15em; }
+#stats-cloud.on::before { color: var(--ok); }
+#stats-cloud.failed::before { color: var(--warn); }
+@media (max-width: 30rem) {
+  #cloud-dialog .field { grid-template-columns: minmax(0, 1fr); gap: 0.35rem; }
+}
+.confirm-text { margin: 0 0 1.2rem; color: var(--muted); }
+#confirm-dialog .actions { display: flex; gap: 0.6rem; margin: 0; }
 .menu { display: flex; flex-direction: column; gap: 0.2rem; }
 .menu button { justify-content: flex-start; gap: 0.9rem; padding: 0.85rem 0.75rem; background: none; text-align: left; }
 .menu button:hover { background: var(--s2); }
@@ -742,6 +854,15 @@ dd { margin: 0; color: var(--muted); }
   nav button .icon { width: 1.45rem; height: 1.45rem; padding: 0.15rem 0; transition: transform var(--mid) var(--spring); }
   nav button[aria-current="true"] .icon { transform: translateY(-1px); }
   nav .icon, nav .more { display: flex; }
+  nav [data-mode="stats"] { display: none; } /* in More: six tabs at most */
+  #net-form .field { grid-template-columns: 5.5rem minmax(0, 1fr); }
+  #log-net div::before { min-width: 5.5rem; }
+  .menu .phone { display: flex; }
+  /* A room under the open table: the conversation and the keys, nothing else. */
+  body.table-open[data-view="net"] :is(#net-stations, #net-links, #tape, #keying .live) { display: none; }
+  [data-view="net"] dialog.floating { max-height: 45dvh; } /* room for a few lines of the conversation */
+  body.table-open[data-view="net"] .keys button { min-height: 4rem; }
+  body.table-open[data-view="net"] .keys [data-input="2"] { min-height: 3rem; }
 
   /* The toast floats above the tab bar. */
   footer {
@@ -861,6 +982,9 @@ dd { margin: 0; color: var(--muted); }
   #statistics, #train { overflow-y: auto; }
   [data-view="rx"] #log, [data-view="trx"] #log { grid-column: 1; }
   #signal { grid-area: 1 / 2 / 2 / 3; overflow-y: auto; }
+  [data-view="net"] #log { grid-column: 1; }
+  #net { grid-area: 1 / 2 / 2 / 3; overflow-y: auto; }
+  [data-view="net-join"] #net { grid-area: 1 / 1 / 3 / 3; }
   #keying { grid-area: 2 / 1 / 3 / 3; }
   .live, #keying-info { display: none; }
   .keys { grid-template-columns: 1fr 1.2fr 1fr; grid-template-areas: "left key right"; }

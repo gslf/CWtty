@@ -1,12 +1,15 @@
 /*
  * modals.c - Modal windows: the C-x command menu, the Morse table (which
- * floats over the running activity without stopping it), settings and
- * help.
+ * floats over the running activity without stopping it), settings, help
+ * and the window to enter an online room.
  */
 #include <stdio.h>
 #include <string.h>
 
 #include "app.h"
+#include "cloud.h"
+#include "fcrypto.h"
+#include "platform.h"
 #include "keyer.h"
 #include "morse.h"
 #include "theme.h"
@@ -36,6 +39,7 @@ static const menu_item MENU[] = {
     {'t', "Transmit", "Key with Space and the arrow paddles", MODE_TX},
     {'r', "Receive", "Decode CW from the microphone", MODE_RX},
     {'x', "Transceiver", "Listen, break in to transmit", MODE_TRX},
+    {'n', "Rooms", "Key with other stations on the internet", MODE_NET},
     {'p', "Training", "Practice copying and sending", MODE_TRAIN},
     {'i', "Statistics", "Training records and progress", MODE_STATS},
     {'m', "Morse table", "Floating reference, keeps running", -1},
@@ -43,7 +47,7 @@ static const menu_item MENU[] = {
     {'h', "Help", "Keys and tips", -1},
     {'q', "Quit", "also C-x C-c", -1},
 };
-#define MENU_TOOLS 5 /* index of the first tool */
+#define MENU_TOOLS 6 /* index of the first tool */
 
 static void menu_run(app_t *a, int i)
 {
@@ -65,7 +69,7 @@ static void menu_run(app_t *a, int i)
         app_open_modal(a, MODAL_HELP);
         break;
     case 'q':
-        a->quit = 1;
+        app_quit(a);
         break;
     default:
         app_set_mode(a, MENU[i].mode);
@@ -119,7 +123,8 @@ static int menu_key(app_t *a, const key_event *ev)
         return 1;
     }
     if ((ev->mods & MOD_CTRL) && ev->key == 'c') { /* C-x C-c */
-        a->quit = 1;
+        app_close_modal(a);
+        app_quit(a);
         return 1;
     }
     switch (ev->key) {
@@ -292,6 +297,8 @@ static int build_fields(app_t *a, field *f)
     HDR("TRANSCEIVER");
     INT("Break-in delay", breakin_ms, 50, 3000, 50, "ms");
     BOOL("Sidetone", trx_sidetone);
+    HDR("ROOMS");
+    INT("Remote pitch", net_tone, 300, 1500, 10, "Hz");
     HDR("AUDIO");
     f[n++] = (field){F_DEVICE, "Output", NULL, 0, 0, 0, NULL, NULL, 1, 0};
     f[n++] = (field){F_DEVICE, "Input", NULL, 0, 0, 0, NULL, NULL, 1, 1};
@@ -510,6 +517,19 @@ static const char *const HELP[] = {
     "\tthe receiver goes quiet and comes back after",
     "\tthe break-in delay set in Settings.",
     "",
+    "#ROOMS  (C-x n)",
+    "Enter\tEnter a room, or change room or callsign",
+    "\tEverybody in a room hears everybody, each",
+    "\tstation on a pitch of its own (around Remote",
+    "\tpitch in Settings), from a terminal or the web",
+    "\tapp. Leaving the screen leaves the room.",
+    "K\tPasses the turn and ends your line, as on",
+    "\tthe air; so do KN, BK, AR and SK. BT (=)",
+    "\tstarts a new paragraph. A line also ends when",
+    "\tanother station starts, or after a pause.",
+    "Password\tOptional: makes the room private, its keying",
+    "\tencrypted end to end. Choose an uncommon one.",
+    "",
     "#TRAINING",
     "Enter\tStart a session, check an answer, next item",
     "\tEach typed or decoded character is checked.",
@@ -532,6 +552,12 @@ static const char *const HELP[] = {
     "\tweeks and how well each character goes. Saved",
     "\tnext to the settings, in cwtty.stats.",
     "↑↓\tScroll",
+    "e\tExport to ~/cwtty-stats-<date>.txt",
+    "i\tImport an exported file (replaces, asks first)",
+    "c\tFilen cloud: sign in (2FA too) to keep every",
+    "\tdevice's statistics in sync; the totals are",
+    "\ttheir sum. The session is kept in cwtty.filen",
+    "\t(private), never the password.",
     "",
     "#TIPS",
     "\tFor exact keying use a terminal that supports the",
@@ -599,6 +625,458 @@ static int help_key(app_t *a, const key_event *ev)
 }
 
 /* ======================================================================== */
+/* Enter a room                                                             */
+/* ======================================================================== */
+
+enum { JF_CALL, JF_ROOM, JF_PASS, JF_JOIN, JF_COUNT };
+
+static void join_render(app_t *a)
+{
+    static const char *const labels[] = {"Callsign", "Room", "Password"};
+    rect_t r = ui_center(60, 16), body;
+    int i, y, fx, fw, blink = app_blink(a, 530);
+
+    body = ui_modal(r, "Enter a room", "Esc cancel");
+    fx = body.x + 15;
+    fw = body.w - 18;
+    y = body.y + 1;
+    for (i = 0; i < 3; i++, y += 2) {
+        const char *value = i == JF_CALL ? a->join_call : (i == JF_ROOM ? a->join_room : a->join_pass);
+        int sel = a->join_sel == i;
+        if (sel)
+            scr_put(body.x + 1, y, 0x258C, TH_ACCENT, TH_SURFACE_2, 0);
+        scr_text(body.x + 3, y, labels[i], sel ? TH_ACCENT_HI : TH_FG, TH_SURFACE_2, A_BOLD);
+        ui_field(fx, y, fw, value, sel, i == JF_PASS, blink);
+        if (i == JF_PASS && !value[0] && !sel)
+            scr_text(fx + 1, y, "none: a public room", TH_FG_GHOST, TH_SURFACE, A_ITALIC);
+    }
+    if (a->join_error[0]) {
+        scr_text(body.x + 3, y, a->join_error, TH_WARN, TH_SURFACE_2, 0);
+    } else {
+        scr_text(body.x + 3, y, "A password makes the room private and encrypted:",
+                 TH_FG_FAINT, TH_SURFACE_2, 0);
+        scr_text(body.x + 3, y + 1, "only who knows it is in. Choose an uncommon one.", TH_FG_FAINT, TH_SURFACE_2, 0);
+    }
+    y += 3;
+    {
+        int sel = a->join_sel == JF_JOIN, bx = body.x + body.w - 13;
+        scr_text(bx, y, "  Enter  ", sel ? TH_ON_ACCENT : TH_ACCENT, sel ? TH_ACCENT : TH_SURFACE_3, A_BOLD);
+    }
+}
+
+/* Characters a field takes: callsigns are upper case. */
+static int join_char(int which, int c)
+{
+    if (which == JF_CALL) {
+        if (c >= 'a' && c <= 'z')
+            c -= 'a' - 'A';
+        return (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '/' ? c : 0;
+    }
+    return c >= 0x20 && c < 0x7F ? c : 0;
+}
+
+static int join_key(app_t *a, const key_event *ev)
+{
+    char *value = a->join_sel == JF_CALL ? a->join_call : (a->join_sel == JF_ROOM ? a->join_room : a->join_pass);
+    size_t cap = a->join_sel == JF_CALL ? sizeof a->join_call
+                                        : (a->join_sel == JF_ROOM ? sizeof a->join_room : sizeof a->join_pass);
+    if (is_cancel(ev)) {
+        memset(a->join_pass, 0, sizeof a->join_pass);
+        app_close_modal(a);
+        return 1;
+    }
+    switch (ev->key) {
+    case KEY_UP:
+        a->join_sel = (a->join_sel + JF_COUNT - 1) % JF_COUNT;
+        return 1;
+    case KEY_DOWN:
+    case KEY_TAB:
+        a->join_sel = (a->join_sel + 1) % JF_COUNT;
+        return 1;
+    case KEY_ENTER:
+        if (online_join(a) == 0)
+            app_close_modal(a);
+        return 1;
+    case KEY_BACKSPACE:
+        if (a->join_sel != JF_JOIN && value[0])
+            value[strlen(value) - 1] = 0;
+        a->join_error[0] = 0;
+        return 1;
+    default:
+        break;
+    }
+    if (a->join_sel != JF_JOIN && ev->text && !(ev->mods & (MOD_CTRL | MOD_ALT))) {
+        int c = join_char(a->join_sel, ev->text);
+        size_t n = strlen(value);
+        size_t limit = a->join_sel == JF_CALL ? ROOM_CALL_CAP - 1
+                                              : (a->join_sel == JF_ROOM ? ROOM_NAME_CAP - 1 : cap - 1);
+        if (c && n < limit && n + 1 < cap) {
+            value[n] = (char)c;
+            value[n + 1] = 0;
+            a->join_error[0] = 0;
+        }
+    }
+    return 1; /* modal: everything stays here */
+}
+
+/* ======================================================================== */
+/* Leave the room?                                                          */
+/* ======================================================================== */
+
+static void leave_render(app_t *a)
+{
+    rect_t r = ui_center(56, 9), body;
+    char line[96];
+    int quit = a->leave_to == LEAVE_QUIT;
+
+    body = ui_modal(r, quit ? "Leave the room and quit?" : "Leave the room?", "Esc stay");
+    snprintf(line, sizeof line, "You will leave %s and stop hearing", a->net ? a->net->room.name : "the room");
+    scr_text(body.x + 3, body.y + 1, line, TH_FG, TH_SURFACE_2, 0);
+    scr_text(body.x + 3, body.y + 2, "the other stations.", TH_FG, TH_SURFACE_2, 0);
+    {
+        int bx = body.x + body.w - 3 - 9 - 2 - 8;
+        scr_text(bx, body.y + 4, "  Stay  ", TH_FG, TH_SURFACE_3, 0);
+        scr_text(bx + 10, body.y + 4, "  Leave  ", TH_ON_ACCENT, TH_ACCENT, A_BOLD);
+    }
+}
+
+static int leave_key(app_t *a, const key_event *ev)
+{
+    if (is_cancel(ev) || ev->key == 'n') {
+        app_close_modal(a);
+        return 1;
+    }
+    if (ev->key == KEY_ENTER || ev->key == 'y') {
+        app_close_modal(a);
+        a->leave_ok = 1;
+        if (a->leave_to == LEAVE_QUIT)
+            app_quit(a);
+        else
+            app_set_mode(a, a->leave_to);
+        a->leave_ok = 0;
+        return 1;
+    }
+    return 1; /* modal */
+}
+
+/* ======================================================================== */
+/* Import statistics                                                        */
+/* ======================================================================== */
+
+static statsbook_t import_book; /* the book as it would be, to confirm */
+
+static int answers_of(const stats_t *s)
+{
+    return s->dir[STATS_COPY].answers + s->dir[STATS_SEND].answers;
+}
+
+static void import_render(app_t *a)
+{
+    rect_t r = ui_center(66, 11), body;
+    char line[128];
+    int bx;
+
+    if (a->import_stage == 0) {
+        body = ui_modal(r, "Import statistics", "Esc cancel");
+        scr_text(body.x + 3, body.y + 1, "File", TH_ACCENT_HI, TH_SURFACE_2, A_BOLD);
+        ui_field(body.x + 9, body.y + 1, body.w - 12, a->import_path, 1, 0, app_blink(a, 530));
+        if (a->import_error[0]) {
+            scr_text(body.x + 3, body.y + 3, a->import_error, TH_WARN, TH_SURFACE_2, 0);
+        } else {
+            scr_text(body.x + 3, body.y + 3, "A file exported with e. It replaces the statistics", TH_FG_FAINT,
+                     TH_SURFACE_2, 0);
+            scr_text(body.x + 3, body.y + 4, "here: you are asked before anything changes.", TH_FG_FAINT, TH_SURFACE_2,
+                     0);
+        }
+        bx = body.x + body.w - 3 - 8;
+        scr_text(bx, body.y + 6, "  Open  ", TH_ON_ACCENT, TH_ACCENT, A_BOLD);
+        return;
+    }
+    body = ui_modal(r, "Replace the statistics?", "Esc cancel");
+    {
+        const stats_t *t = &import_book.total;
+        char date[32] = "";
+        int y, m, d, n = import_book.others + (answers_of(&import_book.own.s) > 0);
+        static const char *const MON[] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                                          "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
+        if (t->last_day > 0) {
+            stats_date(t->last_day, &y, &m, &d);
+            snprintf(date, sizeof date, ", last on %d %s %d", d, MON[clampi(m, 1, 12) - 1], y);
+        }
+        snprintf(line, sizeof line, "The file: %d answer%s from %d device%s%s.", answers_of(t),
+                 answers_of(t) == 1 ? "" : "s", n, n == 1 ? "" : "s", date);
+        scr_text(body.x + 3, body.y + 1, line, TH_FG, TH_SURFACE_2, 0);
+        if (answers_of(&a->book.total) > 0) {
+            snprintf(line, sizeof line, "It replaces the %d answer%s here.", answers_of(&a->book.total),
+                     answers_of(&a->book.total) == 1 ? "" : "s");
+            scr_text(body.x + 3, body.y + 2, line, TH_FG, TH_SURFACE_2, 0);
+            scr_text(body.x + 3, body.y + 4, "Export first (e) to keep a copy of the ones here.", TH_FG_FAINT,
+                     TH_SURFACE_2, 0);
+        } else {
+            scr_text(body.x + 3, body.y + 2, "There are no statistics here yet.", TH_FG, TH_SURFACE_2, 0);
+        }
+    }
+    bx = body.x + body.w - 3 - 11 - 2 - 10;
+    scr_text(bx, body.y + 6, "  Cancel  ", TH_FG, TH_SURFACE_3, 0);
+    scr_text(bx + 12, body.y + 6, "  Replace  ", TH_ON_ACCENT, TH_ACCENT, A_BOLD);
+}
+
+/* Reads the file and prepares the book it makes. */
+static void import_open(app_t *a)
+{
+    static char text[BOOK_TEXT_CAP];
+    char path[1024];
+    int n;
+    if (app_expand_path(a->import_path, path, sizeof path) != 0) {
+        str_copy(a->import_error, sizeof a->import_error, "Type the path of the file.");
+        return;
+    }
+    n = plat_read_file(path, text, sizeof text);
+    if (n < 0) {
+        str_copy(a->import_error, sizeof a->import_error, "Could not read that file.");
+        return;
+    }
+    import_book = a->book;
+    if (n >= (int)sizeof text - 1 || statsbook_import(&import_book, text) != 0) {
+        str_copy(a->import_error, sizeof a->import_error, "That is not a CWtty statistics file.");
+        return;
+    }
+    a->import_stage = 1;
+}
+
+static int import_key(app_t *a, const key_event *ev)
+{
+    if (is_cancel(ev) || (a->import_stage == 1 && ev->key == 'n')) {
+        app_close_modal(a);
+        return 1;
+    }
+    if (ev->key == KEY_ENTER || (a->import_stage == 1 && ev->key == 'y')) {
+        if (a->import_stage == 0) {
+            import_open(a);
+            return 1;
+        }
+        a->book = import_book;
+        app_save_stats(a);
+        app_close_modal(a);
+        app_toast(a, 0, "Statistics imported");
+        return 1;
+    }
+    if (a->import_stage == 0) {
+        size_t n = strlen(a->import_path);
+        if ((ev->mods & MOD_CTRL) && ev->key == 'u') { /* clear the field */
+            a->import_path[0] = 0;
+            a->import_error[0] = 0;
+        } else if (ev->key == KEY_BACKSPACE) {
+            while (n > 0 && (a->import_path[n - 1] & 0xC0) == 0x80)
+                n--; /* a whole UTF-8 character */
+            if (n)
+                a->import_path[n - 1] = 0;
+            a->import_error[0] = 0;
+        } else if (ev->text >= 0x20 && ev->text != 0x7F && !(ev->mods & (MOD_CTRL | MOD_ALT)) &&
+                   n + 1 < sizeof a->import_path) {
+            char u[4];
+            int k = utf8_encode(ev->text, u);
+            if (k > 0 && n + (size_t)k < sizeof a->import_path) {
+                memcpy(a->import_path + n, u, (size_t)k);
+                a->import_path[n + (size_t)k] = 0;
+            }
+            a->import_error[0] = 0;
+        }
+    }
+    return 1; /* modal */
+}
+
+/* ======================================================================== */
+/* Filen cloud                                                              */
+/* ======================================================================== */
+
+enum { CF_MAIL, CF_PASS, CF_CODE, CF_BUTTON, CF_COUNT };
+
+static void cloud_wipe(app_t *a)
+{
+    fc_wipe(a->cloud_pass, sizeof a->cloud_pass);
+    a->cloud_code[0] = 0;
+}
+
+static void cloud_render(app_t *a)
+{
+    rect_t r = ui_center(66, 16), body;
+    int state = cloud_state(), y, i, blink = app_blink(a, 530);
+    char line[160];
+
+    body = ui_modal(r, "Filen cloud", "Esc close");
+    y = body.y + 1;
+    if (a->cloud_confirm) {
+        scr_text(body.x + 3, y, "Disconnect from Filen?", TH_FG, TH_SURFACE_2, A_BOLD);
+        scr_text(body.x + 3, y + 2, "The statistics stay here and in your Filen account;", TH_FG_MUTED, TH_SURFACE_2, 0);
+        scr_text(body.x + 3, y + 3, "this computer stops keeping them in sync.", TH_FG_MUTED, TH_SURFACE_2, 0);
+        i = body.x + body.w - 3 - 14 - 2 - 10;
+        scr_text(i, body.y + body.h - 3, "  Cancel  ", TH_FG, TH_SURFACE_3, 0);
+        scr_text(i + 12, body.y + body.h - 3, "  Disconnect  ", TH_ON_ACCENT, TH_ACCENT, A_BOLD);
+        return;
+    }
+    if (state != CLOUD_OFF && cloud_email()[0]) {
+        static const char *const labels[] = {"Account", "Status", "Devices", "Folder"};
+        const char *status;
+        char devices[48];
+        if (state == CLOUD_BUSY)
+            status = "syncing…";
+        else if (a->cloud_failed)
+            status = cloud_error()[0] ? cloud_error() : "the last sync failed";
+        else if (cloud_synced()[0])
+            status = (snprintf(line, sizeof line, "synced at %s", cloud_synced()), line);
+        else
+            status = "not synced yet";
+        if (a->book.others)
+            snprintf(devices, sizeof devices, "%d: this one and %d other%s", 1 + a->book.others, a->book.others,
+                     a->book.others == 1 ? "" : "s");
+        else
+            str_copy(devices, sizeof devices, "this one only, so far");
+        for (i = 0; i < 4; i++, y += 2) {
+            const char *v = i == 0 ? cloud_email() : (i == 1 ? status : (i == 2 ? devices : "CWtty/stats-v1"));
+            scr_text(body.x + 3, y, labels[i], TH_FG_MUTED, TH_SURFACE_2, 0);
+            scr_text(body.x + 15, y, v, i == 1 && a->cloud_failed && state != CLOUD_BUSY ? TH_WARN : TH_FG,
+                     TH_SURFACE_2, i == 0 ? A_BOLD : 0);
+        }
+        scr_text(body.x + 3, y, "Every device adds its own; the totals are their sum.", TH_FG_FAINT, TH_SURFACE_2, 0);
+        scr_text(body.x + 3, y + 1, "Synced at start, a minute after training and at exit.", TH_FG_FAINT,
+                 TH_SURFACE_2, 0);
+        i = body.x + body.w - 3 - 14 - 2 - 12;
+        scr_text(i, y + 3, " s Sync now ", TH_ON_ACCENT, TH_ACCENT, A_BOLD);
+        scr_text(i + 14, y + 3, " d Disconnect ", TH_FG, TH_SURFACE_3, 0);
+        return;
+    }
+
+    /* Signing in. */
+    scr_text(body.x + 3, y, "Keep the statistics of all your devices in sync, end-to-end", TH_FG_MUTED, TH_SURFACE_2,
+             0);
+    scr_text(body.x + 3, y + 1, "encrypted, in your Filen account (filen.io).", TH_FG_MUTED, TH_SURFACE_2, 0);
+    y += 3;
+    {
+        static const char *const labels[] = {"Email", "Password", "2FA code"};
+        for (i = 0; i < 3; i++, y += 2) {
+            const char *value = i == CF_MAIL ? a->cloud_mail : (i == CF_PASS ? a->cloud_pass : a->cloud_code);
+            int sel = a->cloud_sel == i && state != CLOUD_BUSY;
+            int fw = i == CF_CODE ? 10 : body.w - 18;
+            if (sel)
+                scr_put(body.x + 1, y, 0x258C, TH_ACCENT, TH_SURFACE_2, 0);
+            scr_text(body.x + 3, y, labels[i], sel ? TH_ACCENT_HI : TH_FG, TH_SURFACE_2, A_BOLD);
+            ui_field(body.x + 15, y, fw, value, sel, i == CF_PASS, blink);
+            if (i == CF_CODE)
+                scr_text(body.x + 27, y, cloud_need_code() ? "from your authenticator app" : "if your account has 2FA",
+                         cloud_need_code() ? TH_ACCENT : TH_FG_FAINT, TH_SURFACE_2, 0);
+        }
+    }
+    if (state == CLOUD_BUSY)
+        scr_text(body.x + 3, y, "Signing in… (a few seconds: the keys are derived here)", TH_ACCENT, TH_SURFACE_2, 0);
+    else if (cloud_error()[0])
+        scr_text(body.x + 3, y, cloud_error(), TH_WARN, TH_SURFACE_2, 0);
+    else
+        scr_text(body.x + 3, y, "The password stays here: only a key derived from it is sent.", TH_FG_FAINT,
+                 TH_SURFACE_2, 0);
+    {
+        int sel = a->cloud_sel == CF_BUTTON, bx = body.x + body.w - 3 - 11;
+        scr_text(bx, y + 2, "  Sign in  ", sel || state == CLOUD_BUSY ? TH_ON_ACCENT : TH_ACCENT,
+                 sel || state == CLOUD_BUSY ? TH_ACCENT : TH_SURFACE_3, A_BOLD);
+    }
+}
+
+static int cloud_key(app_t *a, const key_event *ev)
+{
+    int state = cloud_state();
+    if (is_cancel(ev)) {
+        if (a->cloud_confirm) {
+            a->cloud_confirm = 0;
+            return 1;
+        }
+        cloud_wipe(a);
+        app_close_modal(a);
+        return 1;
+    }
+    if (ev->mods & (MOD_CTRL | MOD_ALT)) {
+        if ((ev->mods & MOD_CTRL) && ev->key == 'u' && state == CLOUD_OFF && a->cloud_sel < CF_BUTTON) {
+            char *v = a->cloud_sel == CF_MAIL ? a->cloud_mail : (a->cloud_sel == CF_PASS ? a->cloud_pass : a->cloud_code);
+            fc_wipe(v, a->cloud_sel == CF_MAIL ? sizeof a->cloud_mail
+                                               : (a->cloud_sel == CF_PASS ? sizeof a->cloud_pass : sizeof a->cloud_code));
+        }
+        return 1;
+    }
+    if (a->cloud_confirm) {
+        if (ev->key == KEY_ENTER || ev->key == 'y') {
+            cloud_sign_out();
+            a->cloud_confirm = 0;
+            a->cloud_due = 0;
+            app_toast(a, 0, "Disconnected from Filen");
+        } else if (ev->key == 'n') {
+            a->cloud_confirm = 0;
+        }
+        return 1;
+    }
+    if (state == CLOUD_BUSY)
+        return 1;
+    if (state == CLOUD_READY) {
+        if (ev->key == 's') {
+            a->cloud_due = a->now;
+            a->cloud_failed = 0;
+        } else if (ev->key == 'd') {
+            a->cloud_confirm = 1;
+        }
+        return 1;
+    }
+    switch (ev->key) {
+    case KEY_UP:
+        a->cloud_sel = (a->cloud_sel + CF_COUNT - 1) % CF_COUNT;
+        return 1;
+    case KEY_DOWN:
+    case KEY_TAB:
+        a->cloud_sel = (a->cloud_sel + 1) % CF_COUNT;
+        return 1;
+    case KEY_ENTER:
+        if (!a->cloud_mail[0] || !strchr(a->cloud_mail, '@')) {
+            a->cloud_sel = CF_MAIL;
+        } else if (!a->cloud_pass[0]) {
+            a->cloud_sel = CF_PASS;
+        } else {
+            /* The password waits here until the result (cloud_tick()):
+             * only a missing code keeps it, for the code. */
+            cloud_login(a->cloud_mail, a->cloud_pass, a->cloud_code);
+            a->cloud_sel = CF_BUTTON;
+        }
+        return 1;
+    case KEY_BACKSPACE:
+        if (a->cloud_sel < CF_BUTTON) {
+            char *v = a->cloud_sel == CF_MAIL ? a->cloud_mail : (a->cloud_sel == CF_PASS ? a->cloud_pass : a->cloud_code);
+            size_t n = strlen(v);
+            while (n > 0 && (v[n - 1] & 0xC0) == 0x80)
+                n--;
+            if (n)
+                v[n - 1] = 0;
+        }
+        return 1;
+    default:
+        break;
+    }
+    if (a->cloud_sel < CF_BUTTON && ev->text >= 0x20 && ev->text != 0x7F) {
+        char *v = a->cloud_sel == CF_MAIL ? a->cloud_mail : (a->cloud_sel == CF_PASS ? a->cloud_pass : a->cloud_code);
+        size_t cap = a->cloud_sel == CF_MAIL ? sizeof a->cloud_mail
+                                             : (a->cloud_sel == CF_PASS ? sizeof a->cloud_pass : 9);
+        size_t n = strlen(v);
+        char u[4];
+        int k;
+        if (a->cloud_sel == CF_CODE && !(ev->text >= '0' && ev->text <= '9'))
+            return 1;
+        if (a->cloud_sel == CF_MAIL && ev->text == ' ')
+            return 1;
+        k = utf8_encode(ev->text, u);
+        if (k > 0 && n + (size_t)k < cap) {
+            memcpy(v + n, u, (size_t)k);
+            v[n + (size_t)k] = 0;
+        }
+    }
+    return 1;
+}
+
+/* ======================================================================== */
 
 void modal_render(app_t *a, int kind)
 {
@@ -607,6 +1085,10 @@ void modal_render(app_t *a, int kind)
     case MODAL_TABLE: table_render(a); break;
     case MODAL_SETTINGS: settings_render(a); break;
     case MODAL_HELP: help_render(a); break;
+    case MODAL_JOIN: join_render(a); break;
+    case MODAL_LEAVE: leave_render(a); break;
+    case MODAL_IMPORT: import_render(a); break;
+    case MODAL_CLOUD: cloud_render(a); break;
     default: break;
     }
 }
@@ -618,6 +1100,10 @@ int modal_key(app_t *a, int kind, const key_event *ev)
     case MODAL_TABLE: return table_key(a, ev);
     case MODAL_SETTINGS: return settings_key(a, ev);
     case MODAL_HELP: return help_key(a, ev);
+    case MODAL_JOIN: return join_key(a, ev);
+    case MODAL_LEAVE: return leave_key(a, ev);
+    case MODAL_IMPORT: return import_key(a, ev);
+    case MODAL_CLOUD: return cloud_key(a, ev);
     default: return 0;
     }
 }

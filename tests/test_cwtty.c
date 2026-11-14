@@ -17,6 +17,7 @@
 #include "morse.h"
 #include "platform.h"
 #include "settings.h"
+#include "statsbook.h"
 #include "transcript.h"
 #include "util.h"
 
@@ -973,6 +974,218 @@ static void test_stats(void)
     }
 }
 
+/* One random event of a training history, applied to s. */
+static void stats_event(stats_t *s, int kind, int a, int b, int day, int seq)
+{
+    switch (kind) {
+    case 0: stats_answer(s, a & 1, b & 1, 1000.0 * (b % 9), day); break;
+    case 1: stats_char(s, a & 1, 33 + b % 90, (a >> 1) & 1); break;
+    case 2: stats_streak(s, a & 1, 1 + b % STATS_LEVELS, (b % 60) * 1000 + seq, 10 + a % 30, day); break;
+    case 3:
+        s->dir[a & 1].sessions++;
+        s->copy_items += 1;
+        s->copy_listens += 1 + b % 3;
+        s->copy_first += b & 1;
+        s->copy_failed += (b >> 1) & 1;
+        break;
+    default:
+        s->send_timed++;
+        s->send_wpm10 += 100 + b % 200;
+        s->send_ratio10 += 25 + b % 10;
+        if (100 + b % 200 > s->send_best10)
+            s->send_best10 = 100 + b % 200;
+        if (a % 41 > s->koch)
+            s->koch = a % 41;
+        break;
+    }
+}
+
+static void test_statsbook(void)
+{
+    static statsbook_t bk, bk2;
+    static stats_t whole, dev[4];
+    static book_section sec;
+    static char text[BOOK_TEXT_CAP];
+    int trial, i, ok = 1, n;
+    printf("statistics: devices, merge, book, import\n");
+
+    /* A history split at random between devices sums to the same total. */
+    for (trial = 0; trial < 60 && ok; trial++) {
+        int ndev = 1 + trial % 4, day = 20000;
+        rng_seed(1000u + (unsigned)trial);
+        stats_reset(&whole);
+        for (i = 0; i < ndev; i++)
+            stats_reset(&dev[i]);
+        for (i = 0; i < 400; i++) {
+            int kind = rng_int(5), a = rng_int(1000), b = rng_int(1000), d = rng_int(ndev);
+            if (rng_int(4) == 0)
+                day += rng_int(3);
+            stats_event(&whole, kind, a, b, rng_int(6) == 0 ? day - rng_int(40) : day, i);
+            /* the same event, the same day */
+        }
+        /* Again, each event on one device (same random sequence). */
+        rng_seed(1000u + (unsigned)trial);
+        day = 20000;
+        for (i = 0; i < 400; i++) {
+            int kind = rng_int(5), a = rng_int(1000), b = rng_int(1000), d = rng_int(ndev);
+            if (rng_int(4) == 0)
+                day += rng_int(3);
+            stats_event(&dev[d], kind, a, b, rng_int(6) == 0 ? day - rng_int(40) : day, i);
+        }
+        statsbook_init(&bk, "a0", "Terminal");
+        bk.own.s = dev[0];
+        for (i = 1; i < ndev; i++) {
+            memset(&sec, 0, sizeof sec);
+            sec.id[0] = 'b';
+            sec.id[1] = (char)('0' + i);
+            str_copy(sec.name, sizeof sec.name, "Web");
+            sec.rev = 3;
+            sec.s = dev[i];
+            n = statsbook_section_text(&sec, text, (int)sizeof text);
+            if (n < 0 || statsbook_adopt(&bk, text) != 1)
+                ok = 0;
+        }
+        statsbook_changed(&bk);
+        whole.ms_rest = bk.total.ms_rest = 0;
+        if (memcmp(&whole, &bk.total, sizeof whole) != 0) {
+            ok = 0;
+            printf("  trial %d, %d devices: days %d/%d streak %d/%d best %d/%d answers %d/%d rec %d/%d\n", trial,
+                   ndev, whole.days, bk.total.days, whole.day_streak, bk.total.day_streak, whole.best_day_streak,
+                   bk.total.best_day_streak, whole.dir[0].answers, bk.total.dir[0].answers, whole.copy_rec[0].value,
+                   bk.total.copy_rec[0].value);
+        }
+    }
+    CHECK(ok, "a history split between devices does not sum to the same total");
+    CHECK(bk.own.rev == 1 && bk.others == 3, "sections: rev %d, %d others", bk.own.rev, bk.others);
+
+    /* The book's text round trip, the own section named by own=. */
+    n = statsbook_format(&bk, text, (int)sizeof text);
+    CHECK(n > 0 && strncmp(text, "# CWtty", 7) == 0 && strstr(text, "own=a0\n[device a0 rev=1 name=Terminal]\n"),
+          "book format");
+    statsbook_init(&bk2, "ffff", "Terminal");
+    statsbook_parse(&bk2, text);
+    bk2.own.s.ms_rest = bk.own.s.ms_rest;
+    bk2.total.ms_rest = bk.total.ms_rest;
+    CHECK(strcmp(bk2.own.id, "a0") == 0 && bk2.others == 3 && bk2.own.rev == 1 &&
+              memcmp(&bk2.total, &bk.total, sizeof bk.total) == 0 &&
+              memcmp(&bk2.own.s, &bk.own.s, sizeof bk.own.s) == 0 && strcmp(bk2.other[1].name, "Web") == 0,
+          "book round trip");
+
+    /* Records are of all the devices. */
+    statsbook_init(&bk, "a0", "Terminal");
+    memset(&sec, 0, sizeof sec);
+    str_copy(sec.id, sizeof sec.id, "b1");
+    str_copy(sec.name, sizeof sec.name, "Web ] x");
+    sec.rev = 7;
+    stats_streak(&sec.s, STATS_COPY, 2, 50, 20, 20100);
+    statsbook_section_text(&sec, text, (int)sizeof text);
+    CHECK(strncmp(text, "[device b1 rev=7 name=Web  x]\n", 30) == 0, "section header: %.40s", text);
+    CHECK(statsbook_adopt(&bk, text) == 1 && bk.own.s.copy_rec[1].value == 50 &&
+              !stats_streak(&bk.own.s, STATS_COPY, 2, 40, 20, 20101) &&
+              stats_streak(&bk.own.s, STATS_COPY, 2, 51, 20, 20101),
+          "records lifted to all the devices");
+    CHECK(statsbook_adopt(&bk, text) == 0, "the same revision was taken twice");
+    sec.rev = 6;
+    statsbook_section_text(&sec, text, (int)sizeof text);
+    CHECK(statsbook_adopt(&bk, text) == 0 && statsbook_adopt(&bk, "nothing") == -1 &&
+              statsbook_adopt(&bk, "[device XY rev=9 name=a]\n") == -1,
+          "an older or damaged section was taken");
+    /* Own section from the cloud: only when newer (a restored file). */
+    str_copy(sec.id, sizeof sec.id, "a0");
+    sec.rev = 9;
+    stats_answer(&sec.s, STATS_SEND, 1, 0, 20102);
+    statsbook_section_text(&sec, text, (int)sizeof text);
+    CHECK(statsbook_adopt(&bk, text) == 1 && bk.own.rev == 9 && bk.own.s.dir[STATS_SEND].answers == 1 &&
+              strcmp(bk.own.name, "Terminal") == 0,
+          "own section from the cloud");
+
+    /* More devices than kept: the least recently practised leaves. */
+    statsbook_init(&bk, "a0", "Web");
+    for (i = 0; i < BOOK_OTHERS + 2; i++) {
+        memset(&sec, 0, sizeof sec);
+        sec.id[0] = 'c';
+        sec.id[1] = (char)('a' + i % 6);
+        sec.id[2] = (char)('0' + i);
+        sec.rev = 1;
+        stats_answer(&sec.s, STATS_COPY, 1, 0, i == 3 ? 19000 : 20000 + i);
+        statsbook_section_text(&sec, text, (int)sizeof text);
+        statsbook_adopt(&bk, text);
+    }
+    CHECK(bk.others == BOOK_OTHERS && !statsbook_find(&bk, "cd3") && !statsbook_find(&bk, "ca0") &&
+              statsbook_find(&bk, "cd9") && bk.total.dir[0].answers == BOOK_OTHERS,
+          "too many devices: %d kept", bk.others);
+
+    /* Import replaces: the own section by id, or empty; the rest replaced. */
+    statsbook_init(&bk, "a0", "Terminal");
+    stats_answer(&bk.own.s, STATS_COPY, 1, 0, 20100);
+    statsbook_changed(&bk);
+    statsbook_changed(&bk);
+    statsbook_format(&bk, text, (int)sizeof text);
+    statsbook_init(&bk2, "d0", "Web");
+    stats_answer(&bk2.own.s, STATS_SEND, 1, 0, 20100);
+    stats_answer(&bk2.own.s, STATS_SEND, 1, 0, 20101);
+    bk2.own.rev = 5;
+    CHECK(statsbook_import(&bk2, text) == 0 && bk2.own.rev == 6 && bk2.own.s.dir[STATS_SEND].answers == 0 &&
+              bk2.others == 1 && strcmp(bk2.other[0].id, "a0") == 0 && bk2.total.dir[0].answers == 1 &&
+              strcmp(bk2.own.id, "d0") == 0,
+          "import on another device");
+    stats_answer(&bk.own.s, STATS_COPY, 1, 0, 20101);
+    statsbook_changed(&bk);
+    CHECK(statsbook_import(&bk, text) == 0 && bk.own.rev == 4 && bk.own.s.dir[0].answers == 1, "import a backup");
+    CHECK(statsbook_import(&bk, "# CWtty\nwpm=20\ntone=600\n") == -1 && bk.own.rev == 4,
+          "a settings file was imported");
+    CHECK(statsbook_import(&bk, "copy_answers=7\ncopy_correct=5\n") == 0 && bk.own.s.dir[0].answers == 7 &&
+              bk.others == 0 && bk.own.rev == 5,
+          "import a file from before the sections");
+
+    /* A file from before the sections: the days rebuilt. */
+    statsbook_init(&bk, "a0", "Terminal");
+    statsbook_parse(&bk, "# CWtty training records and statistics.\ncopy_answers=40\nfirst_day=20000\n"
+                         "last_day=20100\ndays=10\nday_streak=3\nbest_day_streak=5\nactivity_day=20100\n"
+                         "activity=1 1 1 0 0 2\n");
+    CHECK(bk.own.s.nranges == 2 && bk.own.s.days == 10 && bk.own.s.day_streak == 3 &&
+              bk.own.s.best_day_streak == 5 && bk.own.s.old_days == 6 && bk.own.s.first_day == 20000 &&
+              bk.total.dir[0].answers == 40 && bk.own.rev == 0 && strcmp(bk.own.id, "a0") == 0,
+          "old file: %d runs, %d days, streak %d, best %d", bk.own.s.nranges, bk.own.s.days,
+          bk.own.s.day_streak, bk.own.s.best_day_streak);
+
+    /* Practising every other day: the oldest runs fold, the counts hold. */
+    stats_reset(&whole);
+    for (i = 0; i < 200; i++)
+        stats_answer(&whole, STATS_COPY, 1, 0, 20000 + 2 * i);
+    stats_answer(&whole, STATS_COPY, 1, 0, 20399);
+    CHECK(whole.nranges == STATS_RANGES && whole.days == 201 && whole.day_streak == 2 &&
+              whole.best_day_streak == 2 && whole.first_day == 20000,
+          "folded runs: %d runs, %d days", whole.nranges, whole.days);
+    n = stats_format(&whole, text, (int)sizeof text);
+    stats_parse(&dev[0], text);
+    dev[0].ms_rest = whole.ms_rest;
+    CHECK(n > 0 && memcmp(&dev[0], &whole, sizeof whole) == 0, "folded runs round trip");
+
+    /* The largest book still fits. */
+    statsbook_init(&bk, "0123456789abcdef", "Terminal");
+    for (i = 0; i < 128; i++) {
+        bk.own.s.dir[0].seen[i] = bk.own.s.dir[1].seen[i] = 2147483647;
+        bk.own.s.dir[0].miss[i] = bk.own.s.dir[1].miss[i] = 2147483647;
+        bk.own.s.act[i % STATS_DAYS] = 2147483647;
+    }
+    for (i = 0; i < STATS_RANGES; i++) {
+        bk.own.s.range[i][0] = 9999000 + i * 4;
+        bk.own.s.range[i][1] = 9999000 + i * 4 + 2;
+    }
+    bk.own.s.nranges = STATS_RANGES;
+    n = stats_format(&bk.own.s, text, STATS_TEXT_CAP);
+    CHECK(n > 0, "the largest section does not fit STATS_TEXT_CAP");
+    bk.own.rev = 2147483647;
+    for (i = 0; i < BOOK_OTHERS; i++) {
+        bk.other[i] = bk.own;
+        bk.other[i].id[0] = (char)('a' + i);
+    }
+    bk.others = BOOK_OTHERS;
+    n = statsbook_format(&bk, text, (int)sizeof text);
+    CHECK(n > 0 && n < BOOK_TEXT_CAP, "the largest book does not fit: %d", n);
+}
+
 static void test_training_table_footer(void)
 {
     static app_t a;
@@ -1280,6 +1493,7 @@ int main(void)
     test_copy_training();
     test_copy_levels();
     test_stats();
+    test_statsbook();
     test_training_table_footer();
     test_morse_table();
     test_keyer();

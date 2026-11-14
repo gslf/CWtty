@@ -5,6 +5,9 @@
  */
 #include "app.h"
 
+#include "cloud.h"
+#include "fcrypto.h"
+
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -73,6 +76,9 @@ void app_apply_settings(app_t *a)
         dsp_set_bw(a->dsp, (float)c->rx_bw);
     a->dsp->sens = c->rx_sens;
     a->dsp->afc = c->rx_afc;
+    audio_voice_volume(c->volume);
+    if (a->net)
+        net_settings(a->net, c->wpm, c->net_tone, c->tone_hz);
 
     applied = *c;
     applied_valid = 1;
@@ -86,13 +92,56 @@ void app_save_settings(app_t *a)
         app_toast(a, 1, "Could not save settings to %s", a->cfg_path);
 }
 
+void app_stats_changed(app_t *a)
+{
+    statsbook_changed(&a->book);
+    app_save_stats(a);
+    if (cloud_state() != CLOUD_OFF)
+        a->cloud_due = a->now + 60000.0; /* once the training pauses */
+}
+
+/* The sync with Filen: started when due, results taken in. */
+static void cloud_tick(app_t *a)
+{
+    int fx = cloud_poll(&a->book);
+    if (fx & CLOUD_CHANGED)
+        app_save_stats(a);
+    if (fx & (CLOUD_SIGNED_IN | CLOUD_LOGIN_FAILED)) {
+        /* The code is spent or wrong; the password stays only when the
+         * code alone is missing. */
+        a->cloud_code[0] = 0;
+        if (!(fx & CLOUD_LOGIN_FAILED) || !cloud_need_code())
+            fc_wipe(a->cloud_pass, sizeof a->cloud_pass);
+        a->cloud_sel = !(fx & CLOUD_LOGIN_FAILED) ? 0 : (cloud_need_code() ? 2 : 1);
+    }
+    if (fx & CLOUD_SIGNED_IN) {
+        app_toast(a, 0, "Signed in to Filen as %s", cloud_email());
+        a->cloud_failed = 0;
+        a->cloud_last = a->now;
+    }
+    if (fx & CLOUD_SYNCED) {
+        a->cloud_failed = 0;
+        a->cloud_last = a->now;
+    }
+    if (fx & CLOUD_SYNC_FAILED) {
+        a->cloud_failed = 1;
+        a->cloud_due = a->now + 300000.0; /* again in five minutes */
+    }
+    if (fx & CLOUD_SIGNED_OUT)
+        app_toast(a, 1, "%s", cloud_error());
+    if (a->cloud_due > 0 && a->now >= a->cloud_due && cloud_state() == CLOUD_READY) {
+        a->cloud_due = 0;
+        cloud_sync(&a->book);
+    }
+}
+
 void app_save_stats(app_t *a)
 {
-    static char text[STATS_TEXT_CAP];
+    static char text[BOOK_TEXT_CAP];
     int n;
     if (!a->have_stats_path)
         return;
-    n = stats_format(&a->stats, text, (int)sizeof text);
+    n = statsbook_format(&a->book, text, (int)sizeof text);
     if (n >= 0 && plat_write_file(a->stats_path, text, (size_t)n) == 0) {
         a->stats_error = 0;
     } else if (!a->stats_error) {
@@ -101,13 +150,49 @@ void app_save_stats(app_t *a)
     }
 }
 
+int app_expand_path(const char *in, char *out, size_t cap)
+{
+    while (*in == ' ')
+        in++;
+    if (in[0] == '~' && (in[1] == 0 || in[1] == '/' || in[1] == '\\'))
+        return plat_home_path(in[1] ? in + 2 : "", out, cap);
+    if (!*in || strlen(in) >= cap)
+        return -1;
+    str_copy(out, cap, in);
+    return 0;
+}
+
+void app_export_stats(app_t *a)
+{
+    static char text[BOOK_TEXT_CAP];
+    char name[64], path[1024];
+    int y, m, d, n;
+    plat_local_date(&y, &m, &d);
+    snprintf(name, sizeof name, "cwtty-stats-%04d-%02d-%02d.txt", y, m, d);
+    n = statsbook_format(&a->book, text, (int)sizeof text);
+    if (n < 0 || plat_home_path(name, path, sizeof path) != 0 || plat_write_file(path, text, (size_t)n) != 0) {
+        app_toast(a, 1, "Could not export the statistics to ~/%s", name);
+        return;
+    }
+    snprintf(a->export_path, sizeof a->export_path, "~/%s", name);
+    app_toast(a, 0, "Statistics exported to %s", a->export_path);
+    a->toast_until = a->now + 5000.0;
+}
+
 /* The statistics live next to the settings: cwtty.conf -> cwtty.stats. */
 static void load_stats(app_t *a)
 {
-    static char text[STATS_TEXT_CAP];
+    static char text[BOOK_TEXT_CAP];
     size_t n = strlen(a->cfg_path);
-    stats_reset(&a->stats);
-    a->tr.stats = &a->stats;
+    unsigned char rnd[8] = {0};
+    char id[BOOK_ID + 1];
+    if (plat_random(rnd, sizeof rnd) != 0) {
+        unsigned seed = (unsigned)plat_time_ms();
+        memcpy(rnd, &seed, sizeof seed < sizeof rnd ? sizeof seed : sizeof rnd);
+    }
+    statsbook_id(id, rnd);
+    statsbook_init(&a->book, id, "Terminal");
+    a->tr.stats = &a->book.own.s;
     if (!a->have_cfg_path)
         return;
     str_copy(a->stats_path, sizeof a->stats_path, a->cfg_path);
@@ -118,7 +203,16 @@ static void load_stats(app_t *a)
     strcat(a->stats_path, ".stats");
     a->have_stats_path = 1;
     if (plat_read_file(a->stats_path, text, sizeof text) >= 0)
-        stats_parse(&a->stats, text);
+        statsbook_parse(&a->book, text);
+    /* The Filen session next to them: cwtty.filen. */
+    {
+        char session[1100];
+        str_copy(session, sizeof session, a->stats_path);
+        session[strlen(session) - 6] = 0;
+        strcat(session, ".filen");
+        if (cloud_start(session))
+            a->cloud_due = plat_time_ms() + 1500.0;
+    }
 }
 
 /* The clock and the day for the training (and its statistics). */
@@ -184,7 +278,8 @@ void app_open_modal(app_t *a, int kind)
 
     switch (kind) {
     case MODAL_MENU: {
-        static const int mode_rows[MODE_COUNT] = {0, 0, 1, 2, 3, 4};
+        /* Menu rows by mode: Rooms comes after the transceiver. */
+        static const int mode_rows[MODE_COUNT] = {0, 0, 1, 2, 4, 5, 3};
         a->menu_sel = mode_rows[a->mode];
         break;
     }
@@ -196,6 +291,31 @@ void app_open_modal(app_t *a, int kind)
         break;
     case MODAL_HELP:
         a->help_scroll = 0;
+        break;
+    case MODAL_CLOUD:
+        if (!a->cloud_mail[0])
+            str_copy(a->cloud_mail, sizeof a->cloud_mail, cloud_email());
+        a->cloud_pass[0] = a->cloud_code[0] = 0;
+        a->cloud_sel = a->cloud_mail[0] ? 1 : 0;
+        a->cloud_confirm = 0;
+        break;
+    case MODAL_IMPORT:
+        if (a->export_path[0]) {
+            str_copy(a->import_path, sizeof a->import_path, a->export_path);
+        } else {
+            int y, m, d;
+            plat_local_date(&y, &m, &d);
+            snprintf(a->import_path, sizeof a->import_path, "~/cwtty-stats-%04d-%02d-%02d.txt", y, m, d);
+        }
+        a->import_stage = 0;
+        a->import_error[0] = 0;
+        break;
+    case MODAL_JOIN:
+        str_copy(a->join_call, sizeof a->join_call, a->cfg.callsign);
+        str_copy(a->join_room, sizeof a->join_room, a->cfg.net_room);
+        a->join_pass[0] = 0;
+        a->join_error[0] = 0;
+        a->join_sel = a->join_call[0] ? 1 : 0;
         break;
     default:
         break;
@@ -237,6 +357,8 @@ int app_keying_allowed(const app_t *a)
         return 1;
     case MODE_TRAIN:
         return train_wants_keying(a);
+    case MODE_NET:
+        return a->net && net_joined(a->net);
     default:
         return 0;
     }
@@ -381,17 +503,35 @@ static void rx_enable(app_t *a, int on)
     audio_get_status(&a->audio);
 }
 
+void app_quit(app_t *a)
+{
+    if (a->net && net_joined(a->net) && !a->leave_ok) {
+        a->leave_to = LEAVE_QUIT;
+        app_open_modal(a, MODAL_LEAVE);
+        return;
+    }
+    a->quit = 1;
+}
+
 void app_set_mode(app_t *a, int mode)
 {
     /* Selecting Training again interrupts the current session for setup. */
     if (mode == a->mode && mode != MODE_TRAIN)
         return;
+    /* Another screen leaves the room: never by mistake. */
+    if (a->mode == MODE_NET && a->net && net_joined(a->net) && !a->leave_ok) {
+        a->leave_to = mode;
+        app_open_modal(a, MODAL_LEAVE);
+        return;
+    }
     app_release_keys(a);
     audio_stop_playback();
     if (a->mode == MODE_TRX)
         trx_leave(a);
     else if (a->mode == MODE_TRAIN)
         train_leave(a);
+    else if (a->mode == MODE_NET)
+        online_leave(a);
 
     a->mode = mode;
     a->stats_scroll = 0;
@@ -402,8 +542,12 @@ void app_set_mode(app_t *a, int mode)
         trx_enter(a);
     else if (mode == MODE_TRAIN)
         train_enter(a);
+    else if (mode == MODE_STATS && cloud_state() == CLOUD_READY && a->now - a->cloud_last > 60000.0)
+        a->cloud_due = a->now; /* the other devices' latest */
     app_apply_settings(a); /* sidetone level depends on the mode */
     app_refresh_operator(a);
+    if (mode == MODE_NET)
+        online_enter(a);
 }
 
 /* ------------------------------------------------------------------------ */
@@ -444,6 +588,12 @@ app_t *app_create(const app_options *opt)
         free(a);
         return NULL;
     }
+    a->net = (net_t *)calloc(1, sizeof(net_t));
+    if (a->net && net_init(a->net) != 0) {
+        net_free(a->net);
+        free(a->net);
+        a->net = NULL;
+    }
     dec_init(&a->txdec, a->cfg.wpm);
     dec_init(&a->rxdec, a->cfg.rx_wpm);
     dsp_init(a->dsp, (float)a->cfg.rx_freq, (float)a->cfg.rx_bw, a->cfg.rx_sens);
@@ -470,6 +620,13 @@ void app_destroy(app_t *a)
     if (a->set_dirty || a->set_audio_dirty)
         app_save_settings(a);
     app_release_keys(a);
+    cloud_finish(&a->book, 5000); /* the last answers to the cloud */
+    if (a->net) {
+        if (net_joined(a->net))
+            net_flush(a->net, 1000); /* say goodbye */
+        net_free(a->net);
+        free(a->net);
+    }
     audio_shutdown();
     free(a->dsp);
     free(a);
@@ -543,6 +700,10 @@ void app_handle_key(app_t *a, const key_event *ev)
         if (stats_key(a, ev))
             return;
         break;
+    case MODE_NET:
+        if (online_key(a, ev))
+            return;
+        break;
     default:
         break;
     }
@@ -571,6 +732,10 @@ static void on_tx_token(app_t *a, const dec_token *t)
         break;
     case MODE_TRAIN:
         train_on_sent(a, t);
+        break;
+    case MODE_NET:
+        if (a->net && net_joined(a->net))
+            online_text(a, -1, t);
         break;
     default:
         break;
@@ -650,6 +815,7 @@ void app_update(app_t *a)
     double clock;
 
     tick(a);
+    cloud_tick(a);
     if (a->now - a->audio_status_at > 500.0) {
         audio_get_status(&a->audio);
         a->audio_status_at = a->now;
@@ -665,6 +831,11 @@ void app_update(app_t *a)
             if (ev[i].src == SRC_OPERATOR) {
                 tl_push(&a->tx_tl, t, ev[i].on);
                 dec_key(&a->txdec, ev[i].on, t);
+                /* Even after leaving the screen: the last key-up must go. */
+                if (a->net && net_joined(a->net)) {
+                    net_key(a->net, ev[i].on, t);
+                    a->net_tx_active = a->now;
+                }
             }
         }
     }
@@ -677,6 +848,10 @@ void app_update(app_t *a)
 
     if (a->mode == MODE_TRX)
         trx_update(a);
+    if (a->net) {
+        net_update(a->net, clock);
+        online_update(a);
+    }
 }
 
 /* ------------------------------------------------------------------------ */
@@ -688,7 +863,8 @@ static void render_header(app_t *a)
     static const struct {
         int         mode;
         const char *label;
-    } tabs[] = {{MODE_TX, "TX"}, {MODE_RX, "RX"}, {MODE_TRX, "TX/RX"}, {MODE_TRAIN, "TRAINING"}, {MODE_STATS, "STATS"}};
+    } tabs[] = {{MODE_TX, "TX"},       {MODE_RX, "RX"},             {MODE_TRX, "TX/RX"},
+                {MODE_NET, "ROOMS"}, {MODE_TRAIN, "TRAINING"}, {MODE_STATS, "STATS"}};
     int w = scr_w(), x = 1, i, rx;
     char buf[96];
     const char *kname;
@@ -787,6 +963,37 @@ static int mode_hints(app_t *a, hint_t *h, int cap)
         H("↑↓", "Scroll");
         H("Esc", "Close");
         return n;
+    case MODAL_LEAVE:
+        H("Enter", "Leave");
+        H("Esc", "Stay");
+        return n;
+    case MODAL_CLOUD:
+        if (a->cloud_confirm) {
+            H("Enter", "Disconnect");
+            H("Esc", "Cancel");
+        } else if (cloud_state() == CLOUD_OFF) {
+            H("Type", "Edit");
+            H("↑↓", "Field");
+            H("Enter", "Sign in");
+            H("Esc", "Close");
+        } else {
+            H("s", "Sync now");
+            H("d", "Disconnect");
+            H("Esc", "Close");
+        }
+        return n;
+    case MODAL_IMPORT:
+        if (a->import_stage == 0)
+            H("Type", "Edit");
+        H("Enter", a->import_stage == 0 ? "Open" : "Replace");
+        H("Esc", "Cancel");
+        return n;
+    case MODAL_JOIN:
+        H("Type", "Edit");
+        H("↑↓", "Field");
+        H("Enter", "Join");
+        H("Esc", "Cancel");
+        return n;
     default:
         break;
     }
@@ -848,6 +1055,15 @@ static int mode_hints(app_t *a, hint_t *h, int cap)
     case MODE_STATS:
         H("↑↓", "Scroll");
         H("p", "Training");
+        H("e", "Export");
+        H("i", "Import");
+        H("c", "Cloud");
+        break;
+    case MODE_NET:
+        if (a->net && net_joined(a->net))
+            H(keys, "Transmit");
+        H("Enter", a->net && net_joined(a->net) ? "Change room" : "Join a room");
+        H("C-l", "Clear");
         break;
     default:
         break;
@@ -923,6 +1139,9 @@ void app_render(app_t *a)
         break;
     case MODE_STATS:
         stats_render(a, content);
+        break;
+    case MODE_NET:
+        online_render(a, content);
         break;
     default:
         break;

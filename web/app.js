@@ -1,9 +1,13 @@
 // app.js - The page. The application lives in cwtty.wasm, compiled from the
 // C sources of the terminal app (see wasm/page.c): this draws its state and
-// feeds it with the keys and with what the audio worklet reports.
+// feeds it with the keys, with what the audio worklet reports and with what
+// the online room's WebSockets receive (net.js). The statistics sync with
+// Filen through cloud.js.
 
 import * as audio from './audio.js';
 import { offerInstall } from './install.js';
+import { createNet } from './net.js';
+import { createCloud } from './cloud.js';
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
@@ -39,9 +43,9 @@ const get = (key) => w.cw_get(cstr(key));
 const set = (key, value) => w.cw_set(cstr(key), value);
 
 // The enumerations of wasm/page.c and src/training.h.
-const MODES = ['tx', 'rx', 'trx', 'train', 'stats'];
-const RX = 0, TX = 1;
-const CHAR = 0, PROSIGN = 1, SPACE = 3, LINE = 4, KEY_UP = 5, KEY_DOWN = 6;
+const MODES = ['tx', 'rx', 'trx', 'train', 'stats', 'net'];
+const RX = 0, TX = 1, NET = 2;
+const CHAR = 0, PROSIGN = 1, SPACE = 3, LINE = 4, KEY_UP = 5, KEY_DOWN = 6, JOIN = 7, LEAVE = 8;
 const SETUP = 0, LISTEN = 1, RESULT = 2, SEND = 3;
 const PLAY = 1, WRONG = 4, KOCH = 8, CHECKED = 16;
 const OFF = 0, MIC = 1, DEMO = 2;
@@ -88,6 +92,11 @@ const held = new Set(); // inputs down: 0 left paddle, 1 right paddle, 2 straigh
 const edges = { tx: [], rx: [] }; // key transitions [ms, down], for the tapes
 let lastTx = { text: '', at: -Infinity };
 let micFailed = false;
+let net; // the online room's WebSockets
+const netEdges = []; // each station's key transitions [ms, down], for its light
+const netHeard = new Map(); // callsign -> { at: when its open line last grew, s: its slot (-1: us) }
+const netActive = new Map(); // callsign -> when its key last moved
+const voiceTones = []; // the pitch last given to each remote voice
 const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)');
 
 // ---- Settings ----
@@ -142,6 +151,7 @@ function changed() {
   $('[data-input="0"] span').textContent = swap ? 'Dah' : 'Dit';
   $('[data-input="1"] span').textContent = swap ? 'Dit' : 'Dah';
   audio.send('params', get('tone_hz'), get('wpm'), get('keyer_mode'), w.cw_sidetone(), get('rise_ms'));
+  audio.send('vvolume', get('volume'));
   save();
 }
 
@@ -149,14 +159,57 @@ function changed() {
 
 const STATS_KEY = 'cwtty-stats';
 let statsSerial = 0; // changes with the statistics: the view redraws
+let cloud; // cloud.js: the statistics on Filen
+
+// Text for the C side of the statistics; false if it does not fit.
+function statsText(text) {
+  const p = w.cw_stats_buf(), cap = w.cw_stats_cap();
+  const { read, written } = encoder.encodeInto(text, heap().subarray(p, p + cap - 1));
+  heap()[p + written] = 0;
+  return read === text.length;
+}
 
 function loadStats(text) {
   if (typeof text !== 'string') return;
-  const p = w.cw_stats_buf(), cap = w.cw_stats_cap();
-  const { written } = encoder.encodeInto(text, heap().subarray(p, p + cap - 1));
-  heap()[p + written] = 0;
+  statsText(text);
   w.cw_stats_load();
   statsSerial++;
+}
+
+const pad2 = (n) => String(n).padStart(2, '0');
+
+// The whole book, every device, as a file: the same text as the stored one.
+function exportStats() {
+  const p = w.cw_stats_save();
+  if (!p) return toast('Could not export the statistics', true);
+  const d = new Date(), name = `cwtty-stats-${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}.txt`;
+  const link = document.createElement('a');
+  link.href = URL.createObjectURL(new Blob([str(p)], { type: 'text/plain' }));
+  link.download = name;
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(link.href), 60000);
+  toast(`Statistics exported to ${name}`);
+}
+
+// An exported file replaces the statistics here, once confirmed.
+async function importStats(file) {
+  const wrong = () => toast('That is not a CWtty statistics file', true);
+  if (!file) return;
+  if (file.size >= w.cw_stats_cap()) return wrong();
+  const text = await file.text();
+  if (!statsText(text) || w.cw_stats_preview() !== 0) return wrong();
+  const n = w.cw_preview_answers(), devices = w.cw_preview_devices(), last = w.cw_preview_last_day();
+  const here = stat('copy_answers') + stat('send_answers');
+  const plural = (k, word) => `${k} ${word}${k === 1 ? '' : 's'}`;
+  const ok = await confirmBox('Replace the statistics?',
+    `The file: ${plural(n, 'answer')} from ${plural(devices, 'device')}${last > 0 ? `, last on ${dateOf(last)}` : ''}. ` +
+    (here ? `It replaces the ${plural(here, 'answer')} here: export first to keep a copy.` : 'There are no statistics here yet.'),
+    'Replace');
+  if (!ok) return;
+  w.cw_stats_import();
+  saveStats();
+  cloud.soon();
+  toast('Statistics imported');
 }
 
 function saveStats() {
@@ -191,14 +244,24 @@ async function setMode(name) {
     if (view !== 'train-setup') actions.setup();
     return;
   }
+  // Another screen leaves the room (the room is the screen): never by mistake.
+  if (mode === 'net' && name !== 'net' && w.cw_net_joined() && !(await confirmLeave())) return;
   releaseAll();
   audio.send('stop');
+  if (mode === 'net' && name !== 'net') leaveRoom();
   mode = name;
   w.cw_mode(MODES.indexOf(name));
   for (const button of $$('nav [data-mode]')) button.setAttribute('aria-current', button.dataset.mode === name);
   moveIndicator();
   $('#log-info').textContent = '';
+  // In a room, the top of the log says how a transmission ends.
+  if (name === 'net') $('#log-info').append('Send ', make('b', 'k', 'K'), ' to pass the turn');
   changed();
+  if (name === 'stats') cloud.fresh();
+  // A log shown again starts from its newest text.
+  requestAnimationFrame(() => log() && toEnd(log(), true));
+  if (name === 'net' && !w.cw_net_joined() && matchMedia('(pointer: fine)').matches)
+    ($('#net-call').value ? $('#net-room') : $('#net-call')).focus();
   await listen();
 }
 
@@ -270,7 +333,11 @@ function train(fx) {
     toast(send ? 'Not quite: start sending again from the beginning' : 'Not quite: listen and start again', true);
   }
   if (fx & PLAY) play(str(w.cw_train_target()), 350);
-  if (fx & CHECKED) saveStats();
+  if (fx & CHECKED) {
+    w.cw_stats_changed();
+    saveStats();
+    cloud.changed();
+  }
 }
 
 // ---- What the worklet reports ----
@@ -288,6 +355,7 @@ function onReport(r) {
     if (r.events[i + 2] !== 0) continue;
     w.cw_tx_event(r.events[i], r.events[i + 1]);
     tape(edges.tx, r.events[i], !!r.events[i + 1]);
+    if (w.cw_net_joined()) netActive.set(str(w.cw_net_call()), performance.now());
   }
   for (let i = 0, cap = w.cw_rx_cap(); i < r.rx.length; i += cap) {
     const chunk = r.rx.subarray(i, i + cap);
@@ -296,43 +364,310 @@ function onReport(r) {
   }
   w.cw_demo(r.clock);
   train(w.cw_update(r.clock, r.busy, r.idle));
+  netTick();
+  drain();
+}
+
+function drain() {
   for (let p; (p = w.cw_pop()); ) output(w.cw_pop_dir(), w.cw_pop_kind(), str(p));
 }
 
 function output(dir, kind, text) {
+  if (dir === NET) {
+    netOutput(kind, text);
+    return;
+  }
   if (kind === KEY_UP || kind === KEY_DOWN) {
     tape(edges.rx, w.cw_pop_time(), kind === KEY_DOWN);
     return;
   }
   if (dir === TX && kind !== SPACE) lastTx = { text, at: performance.now() };
   if (mode === 'trx' || (mode === 'tx' && dir === TX) || (mode === 'rx' && dir === RX)) write($(`#log-${mode}`), dir, kind, text);
+  else if (mode === 'net' && dir === TX && w.cw_net_joined()) {
+    const me = str(w.cw_net_call());
+    if (kind === LINE) closeLine(me); // K and the like: over to the others
+    else writeNet('tx', me, kind, text, -1);
+  }
 }
 
 // Appends to the transcript, one line per transmission and direction.
 function write(log, dir, kind, text) {
-  const atEnd = log.scrollHeight - log.scrollTop - log.clientHeight < 32;
   const name = dir === TX ? 'tx' : 'rx';
   let line = log.lastElementChild;
   if (kind === LINE) {
+    markWord(line);
     line?.setAttribute('data-closed', '');
     return;
   }
   if (!line || line.dataset.dir !== name || line.hasAttribute('data-closed')) {
     if (kind === SPACE) return; // never start a line with a space
-    line = log.appendChild(el('div'));
-    line.dataset.dir = name;
-    if (log.childElementCount > 500) log.firstElementChild.remove();
+    markWord(line); // the line is over
+    line = newLine(log, name);
   }
+  append(log, line, kind, text);
+}
+
+function newLine(log, dir) {
+  const line = log.appendChild(el('div'));
+  line.dataset.dir = dir;
+  if (log.childElementCount > 500) log.firstElementChild.remove();
+  return line;
+}
+
+// A log follows its newest text, unless the reader scrolls up to read: then
+// it stays put until they come back to the bottom. Only the reader's own
+// scrolling (wheel, touch, keys, scroll bar) decides, never the position
+// while a smooth scroll is still on its way.
+function follow(log) {
+  let timer;
+  log.following = true;
+  const check = () => {
+    clearTimeout(timer);
+    timer = setTimeout(() => (log.following = log.scrollHeight - log.scrollTop - log.clientHeight < 48), 250);
+  };
+  for (const type of ['wheel', 'touchmove', 'keyup', 'pointerup']) log.addEventListener(type, check, { passive: true });
+  // A log that shrinks (the Morse table opens, the window changes) keeps
+  // its newest line in sight, at once.
+  new ResizeObserver(() => {
+    if (log.following === false) return;
+    log.style.scrollBehavior = 'auto';
+    log.scrollTop = log.scrollHeight;
+    log.style.scrollBehavior = '';
+  }).observe(log);
+}
+
+// Scrolls to the newest text if the log follows it (always, with force).
+function toEnd(log, force) {
+  if (force) log.following = true;
+  if (log.following !== false) log.scrollTop = log.scrollHeight;
+}
+
+// A decoded character, word space or prosign at the end of a line.
+function append(log, line, kind, text) {
   if (kind === SPACE) {
+    markWord(line); // a word is complete
     if (line.lastChild && line.lastChild.textContent !== ' ') line.append(' ');
   } else if (kind === CHAR) {
     const char = make('span', 'in', text);
     char.addEventListener('animationend', () => char.replaceWith(text), { once: true });
     line.append(char);
   } else {
-    line.append(glyphs(el('span', kind === PROSIGN ? '' : 'unknown'), text));
+    line.append(glyphs(el('span', kind === PROSIGN ? 'sign' : 'unknown'), text));
   }
-  if (atEnd) log.scrollTop = log.scrollHeight;
+  toEnd(log);
+}
+
+// The last word of a line takes the colour of its kind once it is complete
+// (src/abbr.c, shared with the terminal): signs such as K or AR,
+// abbreviations such as QRL or 73. Otherwise they would read as text.
+function markWord(line) {
+  if (!line) return;
+  const nodes = [];
+  for (let n = line.lastChild; n; n = n.previousSibling) {
+    if (n.nodeType === Node.TEXT_NODE && n.textContent === ' ') {
+      if (nodes.length) break;
+      continue; // the space after the word
+    }
+    if (n.classList?.contains('word')) break;
+    nodes.unshift(n);
+  }
+  if (!nodes.length) return;
+  const kind = w.cw_word(cstr(nodes.map((n) => n.dataset?.text ?? n.textContent).join('')));
+  if (!kind) return;
+  const word = el('span', `word ${kind === 2 ? 'sign' : 'abbr'}`);
+  line.insertBefore(word, nodes[0]);
+  word.append(...nodes);
+}
+
+// A new message lights up for a moment (once: not again when the view is
+// shown anew). Its characters animate too: only its own end counts.
+function arrive(line) {
+  line.classList.add('new');
+  line.addEventListener('animationend', function done(e) {
+    if (e.target !== line) return;
+    line.classList.remove('new');
+    line.removeEventListener('animationend', done);
+  });
+}
+
+// ---- The online room ----
+
+// Runs the room and its sockets, and passes the remote keying to the voices.
+function netTick() {
+  if (!net) return;
+  net.pump(w.cw_net_update(report.clock + since(), report.clock, performance.now()));
+  const n = w.cw_net_take_vkeys();
+  if (!n) return;
+  const v = new Float64Array(w.memory.buffer, w.cw_net_vkeys(), 4 * n), keys = new Float64Array(3 * n);
+  for (let i = 0; i < n; i++) {
+    const voice = v[4 * i], tone = v[4 * i + 3];
+    if (voiceTones[voice] !== tone) audio.send('tone', voice, (voiceTones[voice] = tone));
+    keys[3 * i] = voice;
+    keys[3 * i + 1] = v[4 * i + 1];
+    keys[3 * i + 2] = v[4 * i + 2];
+  }
+  audio.send('voices', keys);
+}
+
+function netOutput(kind, text) {
+  const who = w.cw_pop_who(), call = str(w.cw_pop_call());
+  if (kind === KEY_UP || kind === KEY_DOWN) {
+    tape((netEdges[who] ??= []), w.cw_pop_time(), kind === KEY_DOWN);
+    netActive.set(call, performance.now());
+  } else if (kind === JOIN) {
+    netEdges[who] = [];
+    note(`${call} is in the room`);
+  } else if (kind === LEAVE) {
+    closeLine(call);
+    note(`${call} left`);
+  } else if (kind === LINE) {
+    closeLine(call); // K and the like: its turn is over
+  } else {
+    writeNet('rx', call, kind, text, who);
+  }
+}
+
+/*
+ * A station's line ends, as a transmission does on the air: with K, KN, BK,
+ * AR or SK, or BT (=) for a new paragraph (wasm/page.c, src/over.c); when
+ * another station starts transmitting, even without K, unless the first is
+ * still keying (two at once keep a line each); after a pause of five word
+ * spaces at its speed, at least 4 s.
+ */
+const unitOf = (s) => w.cw_net_unit(s);
+const keying = (who, s) => performance.now() - (netActive.get(who) ?? -Infinity) < Math.max(1000, 7 * unitOf(s));
+
+// The room's log: a line per station while it keys, so that stations keying
+// at the same time do not mix.
+function openLine(who) {
+  const lines = $('#log-net').children;
+  for (let i = lines.length - 1; i >= Math.max(0, lines.length - 8); i--)
+    if (lines[i].dataset.who === who) return lines[i].hasAttribute('data-closed') ? null : lines[i];
+  return null;
+}
+
+function closeLine(who) {
+  const line = openLine(who);
+  markWord(line);
+  line?.setAttribute('data-closed', '');
+  netHeard.delete(who);
+}
+
+// s: the station's slot, -1 for the operator.
+function writeNet(dir, who, kind, text, s) {
+  const log = $('#log-net');
+  let line = openLine(who), fresh = false;
+  if (!line) {
+    if (kind === SPACE) return;
+    // A new transmission: whoever was on before has finished.
+    for (const [other, heard] of netHeard) if (other !== who && !keying(other, heard.s)) closeLine(other);
+    line = newLine(log, dir);
+    line.dataset.who = who;
+    arrive(line);
+    fresh = true;
+  }
+  netHeard.set(who, { at: performance.now(), s });
+  append(log, line, kind, text);
+  if (fresh) toEnd(log, true); // every new message comes into view
+}
+
+function note(text) {
+  const log = $('#log-net'), line = newLine(log, 'sys');
+  line.textContent = text;
+  line.setAttribute('data-closed', '');
+  arrive(line);
+  toEnd(log, true);
+}
+
+function joinRoom() {
+  const call = $('#net-call').value.trim().toUpperCase(), room = $('#net-room').value.trim(), pass = $('#net-pass').value;
+  if (!/^[A-Z0-9/]{1,10}$/.test(call)) {
+    toast('Enter your callsign: letters, digits and /', true);
+    $('#net-call').focus();
+    return;
+  }
+  if (!room) {
+    toast('Enter the name of a room', true);
+    $('#net-room').focus();
+    return;
+  }
+  cstr(`${call}\n${room}\n${pass}`);
+  const err = w.cw_net_join();
+  $('#net-pass').value = '';
+  if (err) {
+    toast('Could not enter the room', true);
+    return;
+  }
+  try {
+    localStorage['cwtty-net'] = JSON.stringify({ call, room });
+  } catch {}
+  note(`You entered ${w.cw_net_room_private() ? 'the private room' : 'room'} ${str(w.cw_net_room_name())} as ${str(w.cw_net_call())}`);
+  document.activeElement?.blur(); // the keys key now
+  netTick();
+}
+
+// Asks first; resolves to true for yes.
+function confirmBox(title, text, yes, no = 'Cancel') {
+  const dialog = $('#confirm-dialog');
+  setText($('#confirm-title'), title);
+  setText($('#confirm-text'), text);
+  setText($('#confirm-yes'), yes);
+  setText($('#confirm-no'), no);
+  dialog.returnValue = '';
+  dialog.showModal();
+  return new Promise((resolve) => dialog.addEventListener('close', () => resolve(dialog.returnValue === 'yes'), { once: true }));
+}
+
+// Asks before leaving the room; resolves to true to leave.
+const confirmLeave = () =>
+  confirmBox('Leave the room?', `You will leave ${str(w.cw_net_room_name())} and stop hearing the other stations.`, 'Leave', 'Stay');
+
+function leaveRoom() {
+  if (!w.cw_net_joined()) return;
+  const name = str(w.cw_net_room_name());
+  w.cw_net_leave();
+  netTick();
+  audio.send('vclear');
+  for (const who of [...netHeard.keys()]) closeLine(who);
+  note(`You left ${name}`);
+}
+
+const keyed = (list) => !!list?.length && list[list.length - 1][1];
+let netShown = '';
+
+function renderNet() {
+  const joined = w.cw_net_joined(), links = [];
+  for (let i = 0; i < w.cw_net_brokers(); i++) {
+    const state = w.cw_net_link_state(i), name = str(w.cw_net_broker_name(i));
+    if (state < 0) continue;
+    const text = state === 2 ? `${name} connected`
+               : state === 1 ? `${name}: ${str(w.cw_net_link_reason(i))}, retry in ${w.cw_net_link_retry(i)} s`
+               : joined ? `${name} connecting` : name;
+    links.push([state, text]);
+  }
+  const stations = [];
+  if (joined) {
+    stations.push([str(w.cw_net_call()), 'you', held.size > 0 || keyed(edges.tx), 'me']);
+    for (let s = 0; s < w.cw_net_stations(); s++)
+      if (w.cw_net_station_used(s)) stations.push([str(w.cw_net_station_call(s)), `${w.cw_net_station_tone(s)} Hz`, keyed(netEdges[s]), '']);
+  }
+  const shown = JSON.stringify([links, stations]);
+  if (shown !== netShown) {
+    netShown = shown;
+    $('#net-links').replaceChildren(...links.map(([state, text]) => make('span', state === 2 ? 'up' : state === 1 ? 'down' : '', text)));
+    $('#net-stations').replaceChildren(...stations.map(([call, info, on, me]) => {
+      const item = make('li', `${me}${on ? ' on' : ''}`, make('b', '', call), make('small', '', info));
+      return item;
+    }));
+    if (joined && stations.length === 1) $('#net-stations').append(make('li', 'alone', 'nobody else yet'));
+  }
+  if (!joined) return;
+  setText($('#net-name'), str(w.cw_net_room_name()));
+  setText($('#net-kind'), w.cw_net_room_private() ? 'private, encrypted' : 'public');
+  // A pause ends a line too: five word spaces at the station's speed, at least 4 s.
+  const now = performance.now();
+  for (const [who, { at, s }] of netHeard)
+    if (now - at > Math.max(4000, 35 * unitOf(s)) && !keying(who, s)) closeLine(who);
 }
 
 // ---- Drawing helpers ----
@@ -482,6 +817,7 @@ function resize(entries) {
 // ---- Rendering ----
 
 function currentView() {
+  if (mode === 'net') return w.cw_net_joined() ? 'net' : 'net-join';
   if (mode !== 'train') return mode;
   if (w.cw_train_state() === SETUP) return 'train-setup';
   return get('train_dir') ? 'train-send' : 'train-copy';
@@ -495,11 +831,15 @@ function frame() {
   enable();
   $('#out').classList.toggle('on', audio.running());
   $('#in').classList.toggle('on', listening);
-  if (v === 'tx' || v === 'rx' || v === 'trx') renderEmpty();
-  if (v === 'tx' || v === 'trx' || v === 'train-send') renderKeying();
+  if (v === 'tx' || v === 'rx' || v === 'trx' || v === 'net') renderEmpty();
+  if (v === 'tx' || v === 'trx' || v === 'train-send' || v === 'net') renderKeying();
+  if (v.startsWith('net')) renderNet();
   if (v === 'rx' || v === 'trx') renderSignal();
   if (v.startsWith('train')) renderTraining(v);
-  if (v === 'stats') renderStats();
+  if (v === 'stats') {
+    renderStats();
+    renderCloud();
+  }
   if ($('#table-dialog').open) renderTable();
   if (v === 'trx') setText($('#log-info'), $('#log-trx').childElementCount ? 'QSO log' : '');
 }
@@ -517,6 +857,9 @@ function renderEmpty() {
   if (mode === 'tx') {
     title = 'Start keying';
     text = `${keys} What you send is decoded here.`;
+  } else if (mode === 'net') {
+    title = `You are in ${str(w.cw_net_room_name())}`;
+    text = `${keys} Everybody in the room hears you; each station is heard on its own pitch and decoded here.`;
   } else if (!listening && source === MIC) {
     name = 'mic';
     title = micFailed ? 'No microphone' : 'Waiting for the microphone';
@@ -797,7 +1140,7 @@ function renderStats() {
   const copyAnswers = stat('copy_answers'), sendAnswers = stat('send_answers');
   $('#stats-empty').hidden = copyAnswers + sendAnswers > 0;
   $('#stats-body').hidden = copyAnswers + sendAnswers === 0;
-  setText($('#stats-since'), stat('first_day') > 0 ? `since ${dateOf(stat('first_day'))}` : '');
+  $('#stats-export').hidden = copyAnswers + sendAnswers === 0;
   if (copyAnswers + sendAnswers === 0) return;
 
   // Records: four copy levels and send.
@@ -880,6 +1223,47 @@ function toast(text, warn = false, ms = warn ? 4000 : 2200) {
   toastTimer = setTimeout(() => t.classList.remove('show'), ms);
 }
 
+// ---- The statistics on Filen (cloud.js) ----
+
+const clock = (ms) => new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+// The cloud's state where it shows: the Statistics bar and its dialog.
+function renderCloud() {
+  const state = cloud.state, on = state === 'ready' || (state === 'busy' && !!w.cw_cloud_signed_in());
+  const since = stat('first_day') > 0 ? `since ${dateOf(stat('first_day'))}` : '';
+  const sync = state === 'busy' && on ? 'syncing…'
+    : state === 'ready' && cloud.failed ? 'sync failed'
+    : state === 'ready' && cloud.lastSync ? `synced ${clock(cloud.lastSync)}` : '';
+  setText($('#stats-since'), [since, sync].filter(Boolean).join(' · '));
+  $('#stats-cloud').classList.toggle('on', on && !cloud.failed);
+  $('#stats-cloud').classList.toggle('failed', on && cloud.failed);
+  setText($('#empty-cloud'), on ? 'Filen cloud' : 'Sync with Filen');
+  if (!$('#cloud-dialog').open) return;
+
+  $('#cloud-off').hidden = on;
+  $('#cloud-on').hidden = !on;
+  if (on) {
+    const others = w.cw_stat_devices() - 1;
+    setText($('#cloud-account'), cloud.email);
+    setText($('#cloud-state'), state === 'busy' ? 'syncing…' : cloud.failed ? cloud.error || 'the last sync failed'
+      : cloud.lastSync ? `synced at ${clock(cloud.lastSync)}` : 'not synced yet');
+    $('#cloud-state').classList.toggle('warn', state === 'ready' && cloud.failed);
+    setText($('#cloud-devices'), others ? `${others + 1}: this one and ${others} other${others === 1 ? '' : 's'}`
+      : 'this one only, so far');
+    $('#cloud-sync').disabled = state === 'busy';
+    return;
+  }
+  const status = $('#cloud-login-status');
+  setText(status, state === 'busy' ? 'Signing in… (a few seconds: the keys are derived here)'
+    : cloud.error || 'The password stays here: only a key derived from it is sent.');
+  status.classList.toggle('busy', state === 'busy');
+  status.classList.toggle('warn', state !== 'busy' && !!cloud.error);
+  $('#cloud-code').placeholder = cloud.needCode ? 'the code from your authenticator app'
+    : 'only if your account uses 2FA';
+  $('#cloud-login').disabled = state === 'busy';
+  for (const input of $$('#cloud-off input')) input.disabled = state === 'busy';
+}
+
 // ---- Actions, from buttons and keys ----
 
 const log = () => $(`#log-${mode}`);
@@ -899,11 +1283,22 @@ function bandwidth(dir) {
 const actions = {
   enter() {
     if (mode === 'train') train(w.cw_train_enter());
-    else log().lastElementChild?.setAttribute('data-closed', ''); // a new line
+    else {
+      markWord(log()?.lastElementChild); // a new line
+      log()?.lastElementChild?.setAttribute('data-closed', '');
+    }
   },
   backspace() {
     if (mode === 'train') train(w.cw_train_backspace());
-    else if (mode === 'tx') log().lastElementChild?.lastChild?.remove();
+    else if (mode === 'tx') {
+      const last = log().lastElementChild?.lastChild;
+      if (last?.classList?.contains('word')) {
+        last.lastChild?.remove(); // no longer that word: plain text again
+        last.replaceWith(...last.childNodes);
+      } else {
+        last?.remove();
+      }
+    }
   },
   tab() {
     if (get('train_dir')) {
@@ -923,7 +1318,10 @@ const actions = {
   resume: () => train(w.cw_train_resume()),
   mic: () => useSource(MIC),
   demo: () => useSource(DEMO),
-  clear: () => log().replaceChildren(),
+  clear() {
+    log().replaceChildren();
+    log().following = true;
+  },
   'sens+': () => step('rx_sens', 1, (v) => `Sensitivity ${v}`),
   'sens-': () => step('rx_sens', -1, (v) => `Sensitivity ${v}`),
   'tune+': () => step('rx_freq', 10),
@@ -947,6 +1345,24 @@ const actions = {
     const dialog = $('#table-dialog');
     if (dialog.open) dialog.close();
     else dialog.show(); // not modal: keying goes on
+    tableRoom();
+  },
+  async leave() {
+    if (await confirmLeave()) leaveRoom();
+  },
+  statsExport: exportStats,
+  statsImport: () => $('#stats-file').click(),
+  cloud() {
+    renderCloud();
+    $('#cloud-dialog').showModal();
+    if (cloud.state === 'off') ($('#cloud-email').value ? $('#cloud-password') : $('#cloud-email')).focus();
+  },
+  cloudClose: () => $('#cloud-dialog').close(),
+  cloudSync: () => cloud.syncNow(),
+  async cloudOut() {
+    if (await confirmBox('Disconnect from Filen?',
+      'The statistics stay here and in your Filen account; this device stops keeping them in sync.', 'Disconnect'))
+      await cloud.signOut();
   },
   menu: () => $('#menu-dialog').showModal(),
   settings: () => $('#settings-dialog').showModal(),
@@ -967,7 +1383,7 @@ const isField = (target) => target.matches?.('input:not([type="checkbox"]), sele
 
 function shortcut(e) {
   const field = isField(e.target);
-  if (modifiers(e)) return null;
+  if (modifiers(e) || e.target.closest?.('#net-form')) return null; // the form takes its keys
   if (e.key === 'Enter' && !e.target.matches?.('button, select')) return 'enter';
   if (e.key === 'Escape' && $('#table-dialog').open) return 'table';
   if (e.key === 'Escape' && mode === 'train') return 'setup';
@@ -1039,6 +1455,11 @@ for (const dialog of $$('dialog')) {
   });
 }
 
+$('#stats-file').addEventListener('change', (e) => {
+  importStats(e.target.files[0]);
+  e.target.value = ''; // the same file can be chosen again
+});
+
 document.addEventListener('click', (e) => {
   const target = e.target.closest('[data-mode], [data-act]');
   if (!target) return;
@@ -1107,10 +1528,50 @@ try {
   openTuning(false);
 }
 new ResizeObserver(moveIndicator).observe($('nav'));
+for (const text of $$('.text')) follow(text);
+
+// The Morse table floats over the screen. In a room it must not hide the
+// conversation: the screen moves down below it (style.css, .table-open),
+// by as much as the table covers of it.
+function tableRoom() {
+  const dialog = $('#table-dialog'), open = dialog.open;
+  const covered = open ? dialog.offsetTop + dialog.offsetHeight - $('main').getBoundingClientRect().top : 0;
+  document.body.classList.toggle('table-open', open);
+  document.body.style.setProperty('--table-covers', `${Math.max(0, Math.round(covered))}px`);
+}
+new ResizeObserver(tableRoom).observe($('#table-dialog'));
+$('#table-dialog').addEventListener('close', tableRoom);
+addEventListener('resize', tableRoom);
 
 // ---- Start ----
 
 w.cw_init(crypto.getRandomValues(new Uint32Array(1))[0]);
+crypto.getRandomValues(new Uint8Array(w.memory.buffer, w.cw_net_seed(), 32));
+w.cw_net_init();
+net = createNet(w, str);
+$('#net-form').addEventListener('submit', (e) => {
+  e.preventDefault();
+  joinRoom();
+});
+try {
+  const saved = JSON.parse(localStorage['cwtty-net']);
+  $('#net-call').value = saved.call ?? '';
+  $('#net-room').value = saved.room ?? '';
+} catch {
+  $('#net-room').value = 'CQ';
+}
+// The room keeps its sockets alive even when the audio is not reporting.
+setInterval(() => {
+  netTick();
+  drain();
+}, 100);
+addEventListener('pagehide', leaveRoom);
+// Closing or reloading the page in a room: the browser asks first.
+addEventListener('beforeunload', (e) => {
+  if (!w.cw_net_joined()) return;
+  e.preventDefault();
+  e.returnValue = '';
+});
 
 for (const select of $$('select[data-names]'))
   select.append(...NAMES[select.dataset.names].map(([value, text]) => new Option(text, value)));
@@ -1130,11 +1591,34 @@ $('#table').append(
     return section;
   }));
 
+// This device's id in the statistics, for a new book (a stored one keeps its own).
+w.cw_stats_init(cstr([...crypto.getRandomValues(new Uint8Array(8))].map((b) => b.toString(16).padStart(2, '0')).join('')));
 try {
   loadStats(localStorage[STATS_KEY]);
 } catch {}
 // Another tab of the app saved: carry on from its statistics.
 addEventListener('storage', (e) => e.key === STATS_KEY && loadStats(e.newValue));
+
+cloud = createCloud({ w, str, onStats: saveStats, onChange: renderCloud });
+cloud.start();
+$('#cloud-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const email = $('#cloud-email').value.trim(), password = $('#cloud-password').value;
+  if (!email || !password || cloud.state === 'busy') return;
+  try {
+    localStorage['cwtty-cloud-email'] = email;
+  } catch {}
+  await cloud.login(email, password, $('#cloud-code').value.replace(/[^0-9]/g, ''), $('#cloud-remember').checked);
+  // The code is spent or wrong. The password goes too, unless only the code
+  // is missing: then it waits in its field for the code.
+  $('#cloud-code').value = '';
+  if (cloud.state !== 'off' || !cloud.needCode) $('#cloud-password').value = '';
+  if (cloud.state === 'off') (cloud.needCode ? $('#cloud-code') : $('#cloud-password')).focus();
+  else toast(`Signed in to Filen as ${cloud.email}`);
+});
+try {
+  $('#cloud-email').value = localStorage['cwtty-cloud-email'] ?? '';
+} catch {}
 
 const saved = restore();
 source = saved.source ?? MIC;
@@ -1144,6 +1628,11 @@ for (const canvas of $$('#tape, .lanes canvas')) new ResizeObserver(resize).obse
 
 try {
   await audio.start(wasm, onReport);
+  // The room clock stopped and started again: measure the delays anew.
+  audio.onStateChange(() => {
+    w.cw_net_resync();
+    audio.send('vclear');
+  });
 } catch {
   toast('This browser cannot run the audio engine (AudioWorklet)', true);
 }

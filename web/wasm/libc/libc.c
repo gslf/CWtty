@@ -33,6 +33,15 @@ void *memset(void *dst, int c, size_t n)
     return dst;
 }
 
+int memcmp(const void *a, const void *b, size_t n)
+{
+    const unsigned char *p = a, *q = b;
+    for (; n; n--, p++, q++)
+        if (*p != *q)
+            return *p - *q;
+    return 0;
+}
+
 size_t strlen(const char *s)
 {
     const char *p = s;
@@ -75,6 +84,15 @@ char *strrchr(const char *s, int c)
         if (!*s)
             return (char *)last;
     }
+}
+
+char *strstr(const char *s, const char *sub)
+{
+    size_t n = strlen(sub);
+    for (; *s; s++)
+        if (strncmp(s, sub, n) == 0)
+            return (char *)s;
+    return n == 0 ? (char *)s : NULL;
 }
 
 char *strcat(char *dst, const char *src)

@@ -13,9 +13,11 @@
 #include "engine.h"
 #include "morse.h"
 #include "util.h"
+#include "voices.h"
 
 #define EVENT_RING_BYTES (1024 * sizeof(audio_event))
 #define SEQ_RING_BYTES (8192 * sizeof(seq_seg))
+#define VOICE_RING_BYTES (2048 * sizeof(voice_cmd))
 #define CAPTURE_FRAMES (AUDIO_RX_RATE * 4)
 
 typedef struct {
@@ -23,6 +25,15 @@ typedef struct {
     uint16_t on;
     uint16_t gen;
 } seq_seg;
+
+/* A key change of a remote station's voice, tagged with the generation of
+ * audio_voice_clear() it belongs to. */
+typedef struct {
+    uint64_t t;
+    int16_t  voice;
+    uint8_t  on;
+    uint8_t  gen;
+} voice_cmd;
 
 static struct {
     /* --- devices (UI thread only) --- */
@@ -42,6 +53,7 @@ static struct {
 
     ma_rb     events; /* audio -> UI */
     ma_rb     seq;    /* UI -> audio */
+    ma_rb     vring;  /* UI -> audio: remote voices */
     ma_pcm_rb capbuf; /* audio -> UI */
     int       rings_ok;
 
@@ -51,6 +63,9 @@ static struct {
     at_int dit_count, dah_count, straight_count;
     at_int ack_presses; /* all press counters seen by the callback */
     at_int op_enabled;
+    at_int vtone[VOICES];
+    at_int vvolume;
+    at_int vgen;
     at_int seq_gen;
     at_int seq_consumed;
     at_u64 clock;
@@ -61,6 +76,7 @@ static struct {
     /* --- UI thread private --- */
     int      seq_submitted;
     int      ui_gen;
+    int      ui_vgen;
     double   base_ms; /* clock rebasing after a device change */
     uint64_t base_samples;
 
@@ -71,6 +87,8 @@ static struct {
     seq_seg  cur_seg;
     uint32_t seg_left;
     int      seg_active;
+    voices_t voices;
+    int      cur_vgen;
 } A;
 
 /* ======================================================================== */
@@ -130,12 +148,37 @@ static void playback_event(void *ctx, uint64_t t, int on, int src)
     push_event(t, on, src);
 }
 
+/* Takes the remote voices' settings and queued key changes. */
+static void voices_take(void)
+{
+    int vgen = at_get(&A.vgen), k;
+    if (vgen != A.cur_vgen) {
+        voices_reset(&A.voices);
+        A.cur_vgen = vgen;
+    }
+    for (k = 0; k < VOICES; k++)
+        voices_tone(&A.voices, k, at_get(&A.vtone[k]));
+    voices_volume(&A.voices, at_get(&A.vvolume), at_get(&A.rise_ms));
+    for (;;) {
+        size_t size = sizeof(voice_cmd);
+        void *p;
+        voice_cmd cmd;
+        if (ma_rb_acquire_read(&A.vring, &size, &p) != MA_SUCCESS || size != sizeof(voice_cmd))
+            break;
+        memcpy(&cmd, p, sizeof cmd);
+        ma_rb_commit_read(&A.vring, size);
+        if (cmd.gen == (uint8_t)vgen)
+            voices_push(&A.voices, cmd.voice, cmd.t, cmd.on);
+    }
+}
+
 static void playback_callback(ma_device *dev, void *output, const void *input, ma_uint32 frames)
 {
     static const engine_io io = {playback_tick, playback_event, NULL};
     engine_t *e = &A.eng;
     int dc = at_get(&A.dit_count), ac = at_get(&A.dah_count), sc = at_get(&A.straight_count);
     int gen;
+    uint64_t t0;
     (void)input;
 
     e->tone_hz = at_get(&A.tone_hz);
@@ -172,9 +215,11 @@ static void playback_callback(ma_device *dev, void *output, const void *input, m
         A.cur_gen = gen;
     }
 
-    e->clock = at_get64(&A.clock);
+    voices_take();
+    e->clock = t0 = at_get64(&A.clock);
     e->last_active = at_get64(&A.op_last_active);
     engine_render(e, &io, (float *)output, (int)frames, (int)dev->playback.channels, (double)dev->sampleRate);
+    voices_mix(&A.voices, (float *)output, (int)frames, (int)dev->playback.channels, (double)dev->sampleRate, t0);
     at_set64(&A.clock, e->clock);
     at_set64(&A.op_last_active, e->last_active);
     at_set(&A.op_busy, engine_busy(e));
@@ -320,6 +365,7 @@ void audio_capture_stop(void)
 int audio_init(const char *out_dev, const char *in_dev, int latency_ms)
 {
     ma_context_config cc = ma_context_config_init();
+    int k;
 
     memset(&A, 0, sizeof A);
     A.latency_ms = clampi(latency_ms, 2, 100);
@@ -329,7 +375,11 @@ int audio_init(const char *out_dev, const char *in_dev, int latency_ms)
     at_set(&A.volume, 70);
     at_set(&A.rise_ms, 5);
     at_set(&A.op_enabled, 1);
+    at_set(&A.vvolume, 70);
+    for (k = 0; k < VOICES; k++)
+        at_set(&A.vtone[k], 700);
     engine_init(&A.eng);
+    voices_init(&A.voices);
 
     if (ma_rb_init(EVENT_RING_BYTES, NULL, NULL, &A.events) != MA_SUCCESS)
         return -1;
@@ -337,7 +387,13 @@ int audio_init(const char *out_dev, const char *in_dev, int latency_ms)
         ma_rb_uninit(&A.events);
         return -1;
     }
+    if (ma_rb_init(VOICE_RING_BYTES, NULL, NULL, &A.vring) != MA_SUCCESS) {
+        ma_rb_uninit(&A.seq);
+        ma_rb_uninit(&A.events);
+        return -1;
+    }
     if (ma_pcm_rb_init(ma_format_f32, 1, CAPTURE_FRAMES, NULL, NULL, &A.capbuf) != MA_SUCCESS) {
+        ma_rb_uninit(&A.vring);
         ma_rb_uninit(&A.seq);
         ma_rb_uninit(&A.events);
         return -1;
@@ -384,6 +440,10 @@ int audio_reopen(const char *out_dev, const char *in_dev, int latency_ms)
     at_set64(&A.op_last_active, now_samples);
     A.eng.env = 0.0f;
     keyer_reset(&A.eng.keyer);
+    /* The remote voices were scheduled with the old sample rate. */
+    audio_voice_clear();
+    voices_reset(&A.voices);
+    A.cur_vgen = at_get(&A.vgen);
     open_playback(out_dev);
     if (had_capture)
         audio_capture_start();
@@ -401,6 +461,7 @@ void audio_shutdown(void)
     if (A.rings_ok) {
         ma_rb_uninit(&A.events);
         ma_rb_uninit(&A.seq);
+        ma_rb_uninit(&A.vring);
         ma_pcm_rb_uninit(&A.capbuf);
     }
     memset(&A, 0, sizeof A);
@@ -514,6 +575,21 @@ double audio_clock_ms(void)
     return audio_to_ms(at_get64(&A.clock));
 }
 
+uint64_t audio_ms_to_samples(double ms)
+{
+    unsigned rate = A.play_ok ? A.play.sampleRate : 48000;
+    double s;
+    if (rate == 0)
+        rate = 48000;
+    s = (double)A.base_samples + (ms - A.base_ms) * (double)rate / 1000.0;
+    return s > 0.0 ? (uint64_t)(s + 0.5) : 0;
+}
+
+double audio_period_ms(void)
+{
+    return A.play_ok ? (double)A.latency_ms : 0.0;
+}
+
 int audio_poll_events(audio_event *ev, int cap)
 {
     int n = 0;
@@ -609,4 +685,43 @@ void audio_stop_playback(void)
 int audio_playback_busy(void)
 {
     return at_get(&A.seq_consumed) != A.seq_submitted;
+}
+
+/* ------------------------------------------------------------------------ */
+/* Remote stations                                                           */
+/* ------------------------------------------------------------------------ */
+
+void audio_voice_tone(int k, int tone_hz)
+{
+    if (k >= 0 && k < VOICES)
+        at_set(&A.vtone[k], clampi(tone_hz, 100, 3000));
+}
+
+void audio_voice_volume(int volume)
+{
+    at_set(&A.vvolume, clampi(volume, 0, 100));
+}
+
+int audio_voice_key(int k, double t_ms, int on)
+{
+    size_t size = sizeof(voice_cmd);
+    void *p;
+    voice_cmd cmd;
+    if (!A.rings_ok || k < 0 || k >= VOICES)
+        return 0;
+    if (ma_rb_acquire_write(&A.vring, &size, &p) != MA_SUCCESS || size != sizeof(voice_cmd))
+        return 0;
+    cmd.t = audio_ms_to_samples(t_ms);
+    cmd.voice = (int16_t)k;
+    cmd.on = (uint8_t)(on ? 1 : 0);
+    cmd.gen = (uint8_t)A.ui_vgen;
+    memcpy(p, &cmd, sizeof cmd);
+    ma_rb_commit_write(&A.vring, size);
+    return 1;
+}
+
+void audio_voice_clear(void)
+{
+    A.ui_vgen = (A.ui_vgen + 1) & 0xFF;
+    at_set(&A.vgen, A.ui_vgen);
 }

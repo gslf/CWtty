@@ -32,7 +32,7 @@ static void train_do(app_t *a, int fx)
         audio_play_text(a->tr.target, a->cfg.wpm, a->cfg.farnsworth, 350.0);
     }
     if (fx & TRAIN_CHECKED)
-        app_save_stats(a);
+        app_stats_changed(a);
 }
 
 /* ------------------------------------------------------------------------ */
@@ -124,7 +124,7 @@ static void render_records(app_t *a, int x, int y, int w)
     int lv;
     x += scr_text(x, y, c->train_dir == TRAIN_COPY ? "RECORDS" : "RECORD", TH_FG_FAINT, COLOR_KEEP, A_BOLD) + 2;
     if (c->train_dir == TRAIN_SEND) {
-        const stats_record *r = stats_record_of(&a->stats, TRAIN_SEND, 0);
+        const stats_record *r = stats_record_of(&a->book.total, TRAIN_SEND, 0);
         snprintf(buf, sizeof buf, "%d", r->value);
         x += scr_text(x, y, r->value ? buf : "none yet", r->value ? TH_ACCENT : TH_FG_MUTED, COLOR_KEEP, A_BOLD) + 1;
         if (r->value)
@@ -133,7 +133,7 @@ static void render_records(app_t *a, int x, int y, int w)
         return;
     }
     for (lv = 1; lv <= STATS_LEVELS && x < w; lv++) {
-        const stats_record *r = stats_record_of(&a->stats, TRAIN_COPY, lv);
+        const stats_record *r = stats_record_of(&a->book.total, TRAIN_COPY, lv);
         int cur = lv == c->train_level;
         snprintf(buf, sizeof buf, "L%d ", lv);
         x += scr_text(x, y, buf, cur ? TH_FG : TH_FG_FAINT, COLOR_KEEP, 0);
